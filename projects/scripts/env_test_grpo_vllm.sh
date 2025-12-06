@@ -10,7 +10,8 @@ swift rlhf \
     --torch_dtype bfloat16 \
     --gradient_checkpointing true \
     --attn_impl flash_attn \
-    --dataset AI-ModelScope/chartqa_digit_r1v_format#50 \
+    --dataset 'hf::hiyouga/geometry3k:train' \
+    --val_dataset 'hf::hiyouga/geometry3k:validation' \
     --load_from_cache_file true \
     --use_vllm true \
     --vllm_mode colocate \
@@ -22,8 +23,6 @@ swift rlhf \
     --per_device_train_batch_size 2 \
     --per_device_eval_batch_size 2 \
     --learning_rate 1e-6 \
-    --save_total_limit 2 \
-    --logging_steps 5 \
     --gradient_accumulation_steps 8 \
     --warmup_ratio 0.05 \
     --dataloader_num_workers 4 \
@@ -33,4 +32,9 @@ swift rlhf \
     --num_generations 8 \
     --sleep_level 0 \
     --temperature 1.0 \
-    --top_p 0.85
+    --top_p 0.85 \
+    --save_total_limit 2 \
+    --logging_steps 1 \
+    --eval_steps 100 \
+    --save_steps 100 \
+    --log_completions true

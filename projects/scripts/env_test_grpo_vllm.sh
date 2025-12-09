@@ -1,9 +1,10 @@
-# 要设置 --vllm_enforce_eager true 或者设置环境变量export TORCHDYNAMO_DISABLE=1，否则会报错
+# 当设置zero3时，要设置 --vllm_enforce_eager true 或者设置环境变量export TORCHDYNAMO_DISABLE=1，否则会报错
+# 这是因为vLLM和zero3冲突，设置zero2则不用设置这个参数
 MAX_PIXELS=1003520 \
 NPROC_PER_NODE=8 \
 swift rlhf \
     --rlhf_type grpo \
-    --model Qwen/Qwen2.5-VL-7B-Instruct \
+    --model Qwen/Qwen3-VL-8B-Instruct \
     --output_dir ./outputs/env_test \
     --train_type full \
     --deepspeed zero3 \

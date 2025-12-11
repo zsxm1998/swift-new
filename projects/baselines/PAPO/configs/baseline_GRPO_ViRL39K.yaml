@@ -1,0 +1,63 @@
+# config for reproduce GRPO baseline on ViRL39K in PAPO
+
+# model args
+torch_dtype: bfloat16
+attn_impl: flash_attn
+freeze_vit: false
+freeze_aligner: false
+
+# data args
+dataset: 'hf::PAPOGalaxy/PAPO_ViRL39K_train'
+val_dataset: 'hf::PAPOGalaxy/PAPO_MMK12_test'
+dataset_num_proc: 8
+load_from_cache_file: true
+dataloader_num_workers: 4
+max_length: 4096 # 在GRPO时代表max_prompt_length；PAPO代码中设置为4096
+
+# train args
+train_type: full
+deepspeed: zero3
+gradient_checkpointing: true
+num_train_epochs: 2
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 10
+gradient_accumulation_steps: 20
+learning_rate: 1e-6
+weight_decay: 0.01
+warmup_ratio: 0.0
+
+# log, val and save args
+logging_steps: 1
+save_strategy: steps
+save_steps: 150
+save_total_limit: 2
+save_only_model: true
+report_to: swanlab
+swanlab_project: PAPO-Reproduce
+
+# rlhf args
+rlhf_type: grpo
+loss_type: grpo
+num_generations: 5
+steps_per_generation: 60
+beta: 0.01
+epsilon_high: 0.3 # PAPO用的EasyR1中默认为0.3
+num_iterations: 1
+reward_funcs: [papo_accuracy, papo_format]
+reward_weights: ['0.9', '0.1'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+external_plugins: [projects/baselines/PAPO/reward_function.py]
+log_completions: true
+log_entropy: true
+
+# rollout args
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.5
+vllm_tensor_parallel_size: 4
+vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置
+vllm_engine_kwargs:
+  max_num_batched_tokens: 4096
+sleep_level: 1
+max_completion_length: 2048
+temperature: 1.0
+top_p: 0.99

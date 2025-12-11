@@ -9,7 +9,7 @@ python -c "import torch; print(torch.__version__, torch.version.cuda)"
 which nvcc
 nvcc --version
 
-# 检查没问题之后，下面正式开始安装vllm。先构建wheel，再安装。
+# 检查没问题之后，下面正式开始安装vllm。也可以先构建wheel，再安装。
 git clone -b v0.12.0 --single-branch https://github.com/vllm-project/vllm.git
 cd vllm
 python use_existing_torch.py
@@ -52,8 +52,9 @@ which git
 cd $CONDA_PREFIX/lib/python3.10/site-packages/torch/share/cmake/Caffe2/public
 cp cuda.cmake cuda.cmake.bak
 # vim编辑cuda.cmake，在find_package(CUDAToolkit REQUIRED)这一行后面插入如下内容（包括注释）：
-# "conda_envs/new"要根据环境该，一定要写绝对路径，不能用环境变量，否则ninja找不到（当然也有可能是我CMake代码问题）
+# "conda_envs/new"要根据环境该，一定要写**绝对路径**，不能用环境变量，否则ninja找不到（当然也有可能是我CMake代码问题）
 vim cuda.cmake
+# 记得改下面的具体路径！！！
 
 # ZSXM Workaround: define CUDA::nvToolsExt if it was not created by FindCUDAToolkit
 if(NOT TARGET CUDA::nvToolsExt)
@@ -68,12 +69,16 @@ cd /c22073/codes/swift-new/vllm
 proxyon # 开启代理防止git下载失败
 # 在vllm文件夹下的CMakeLists.txt下搜索TORCH_SUPPORTED_VERSION_CUDA和TORCH_SUPPORTED_VERSION_ROCM并把版本改为2.7.1
 
+### 选项1：直接编译安装
 pip install --no-build-isolation .
+### 选项2：先构建wheel再安装
+pip wheel --no-build-isolation --no-deps -w dist .
+pip install dist/*.whl  # 从dist目录安装，替换为实际生成的文件名，或者直接使用通配符
 
 # 7. 后处理，手动找到install生成的wheel并存储起来
 conda remove git
 cd ..
-rm -r vllm
+rm -rf vllm
 
 # 然后重新创建一个终端，进行后续包的安装
 pip install "lmdeploy==0.11.0"
@@ -94,7 +99,7 @@ python setup.py install
 python -c "import flash_attn; print('flash_attn imported OK')"
 pip show flash_attn
 cd ..
-rm -r flash-attention
+rm -rf flash-attention
 
 bash projects/scripts/env_test_sft.sh # Qwen2.5-VL-3B-Instruct sdpa Y Qwen3-VL-2B-Instruct sdpa Y
 bash projects/scripts/env_test_sft_ds.sh # Qwen2.5-VL-7B-Instruct flash-attn Y Qwen3-VL-8B-Instruct flash-attn Y zero3 Y

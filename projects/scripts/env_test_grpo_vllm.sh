@@ -13,6 +13,7 @@ swift rlhf \
     --attn_impl flash_attn \
     --dataset 'hf::hiyouga/geometry3k:train' \
     --val_dataset 'hf::hiyouga/geometry3k:validation' \
+    --dataset_num_proc 32 \
     --load_from_cache_file true \
     --use_vllm true \
     --vllm_mode colocate \

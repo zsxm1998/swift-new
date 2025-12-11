@@ -1345,3 +1345,28 @@ register_dataset(
         ],
         preprocess_func=Geometry3KPreprocessor(),
         tags=['multi-modal', 'en', 'math']))
+
+
+class PAPOPreprocessor(ResponsePreprocessor):
+
+    def preprocess(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        query = row['query'].strip()
+        query = (f'{query}\n\nYou first think through the reasoning process as an internal monologue, enclosed within <think> </think> tags. '
+                  'Then, provide your final answer enclosed within \\boxed{}.')
+        row.update({'query': query})
+        row['solution'] = row['response']
+        return super().preprocess(row)
+
+
+register_dataset(
+    DatasetMeta(
+        hf_dataset_id='PAPOGalaxy/PAPO_ViRL39K_train',
+        preprocess_func=PAPOPreprocessor(),
+        tags=['multi-modal', 'vqa', 'grpo']))
+
+
+register_dataset(
+    DatasetMeta(
+        hf_dataset_id='PAPOGalaxy/PAPO_MMK12_test',
+        preprocess_func=PAPOPreprocessor(),
+        tags=['multi-modal', 'vqa', 'grpo']))

@@ -591,6 +591,17 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     # If false, add KL into loss, otherwise add into reward
     kl_in_reward: Optional[bool] = None  # rloo/reinforce_plus_plus: true, grpo: false (default)
 
+    # For PAPO, VPPO, ToR
+    corrupt_image: Optional[Literal['no_image', 'random_patch']] = None
+    corrupt_image_kwargs: Optional[Union[dict, str]] = None
+    corrupt_image_position: Literal['prompt', 'completion'] = 'prompt'
+    # PAPO
+    kl_prcp_coef: float = 0.0
+    kl_prcp_schedule: Literal['fixed', 'annealing'] = 'fixed' # TODO implement annealing
+    kl_prcp_schedule_args: Optional[Union[dict, str]] = None # TODO implement annealing
+    corrupt_entropy_loss_coef: float = 0.0 # aug_entropy_loss_coef in PAPO
+    entropy_loss_coef: float = 0.0 # ori_entropy_loss_coef in PAPO
+
     generation_batch_size: Optional[int] = None
     steps_per_generation: Optional[int] = None
 
@@ -602,6 +613,10 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     rollout_importance_sampling_mode: Optional[Literal['token_truncate', 'token_mask', 'sequence_truncate',
                                                        'sequence_mask']] = None
     rollout_importance_sampling_threshold: float = 2.0  # Threshold for truncation/masking (C in paper)
+
+    def __post_init__(self):
+        self.corrupt_image_kwargs = json_parse_to_dict(self.corrupt_image_kwargs)
+        super().__post_init__()
 
 
 @dataclass

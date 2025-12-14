@@ -52,6 +52,7 @@ from .rollout_mixin import DataType, RolloutTrainerMixin
 from .utils import (_ForwardRedirection, compute_chord_loss, get_even_process_data, identity_data_collator,
                     load_pil_img, make_chord_sft_dataset, pad_logps_back_to_batch, patch_profiling_context,
                     patch_profiling_decorator, patch_save_last_checkpoint, replace_assistant_response_with_ids)
+from .utils_prcp_rsn import get_corrupted_images_for_input
 
 try:
     from trl.trainer.utils import entropy_from_logits
@@ -233,6 +234,10 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if self.dynamic_sample and mode == 'train':
             # dynamic sampling for std=0 groups
             inputs, total_rewards_per_func = self._dynamic_sampling(inputs, total_rewards_per_func)  # noqa
+
+        # For PAPO, VPPO, ToR
+        if self.corrupt_image:
+            inputs = get_corrupted_images_for_input(self, inputs)
 
         batch_encoded_inputs = self._prepare_batch_inputs(inputs)
 
@@ -864,6 +869,17 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                                                                data['response_token_ids'], loss_mask)
                 batch_encoded_inputs = [template.encode(data, return_length=True) for data in batch]
                 batch_encoded_inputs = to_device(template.data_collator(batch_encoded_inputs), self.model.device)
+                # For PAPO, VPPO, ToR
+                if self.corrupt_image and any('corrupted_images' in data for data in batch):
+                    corrupted_batch_encoded_inputs = []
+                    for data in batch:
+                        if 'corrupted_images' in data:
+                            data = deepcopy(data)
+                            data['images'] = data.pop('corrupted_images')
+                        corrupted_batch_encoded_inputs.append(template.encode(data, return_length=True))
+                    batch_encoded_inputs['corrupted_images'] = to_device(
+                        template.data_collator(corrupted_batch_encoded_inputs)['pixel_values'], self.model.device)
+
                 if self.dynamic_num_samples and self.is_multimodal:
                     batch_encoded_inputs['_origin_data'] = batch
 
@@ -927,6 +943,44 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         ref_per_token_logps = \
                             self._get_per_token_logps_and_entropies(self.model, batch_encoded_inputs)[0]
                 batch_encoded_inputs['ref_per_token_logps'] = ref_per_token_logps
+
+                # For PAPO, VPPO, ToR
+                if self.corrupt_image:
+                    if self.corrupt_image == 'no_image': # ZSXM TODO 这里还是有bug，去掉图片后logp和原来不等长，需要改进
+                        no_image_batch = deepcopy(batch)
+                        for data in no_image_batch:
+                            data.pop('images', None)
+                            for msg in data['messages']:
+                                if msg['role'] in ['user', 'tool']:
+                                    msg['content'] = msg['content'].replace('<image>', '').strip()
+                        with self._template_context(template):
+                            no_image_batch = [template.encode(data) for data in no_image_batch]
+                            no_image_batch = to_device(template.data_collator(no_image_batch), self.model.device)
+                            ni_labels = no_image_batch.pop('labels')
+
+                            ni_extra_kwargs = {'truncated_mask': extra_kwargs['truncated_mask']}
+                            ni_extra_kwargs['logits_to_keep'] = \
+                                (ni_labels.shape[-1] - (torch.ne(ni_labels, -100).int().argmax(-1))).max().item()
+                            assert not self.template.padding_free, 'padding_free for "no_image" corruption is not supported yet.'
+                            ni_extra_kwargs['completion_mask'] = ni_labels[:, -ni_extra_kwargs['logits_to_keep']:] != -100
+                            no_image_batch.update(ni_extra_kwargs)
+
+                            batch_encoded_inputs['corrupted_old_per_token_logps'] = \
+                                self._get_per_token_logps_and_entropies(self.model, no_image_batch)[0]
+                    else:
+                        batch_encoded_inputs['pixel_values'], batch_encoded_inputs['corrupted_images'] = (
+                            batch_encoded_inputs['corrupted_images'], batch_encoded_inputs['pixel_values'])
+                        
+                        cor_logps, cor_etps = self._get_per_token_logps_and_entropies(self.model, batch_encoded_inputs, compute_entropy=self.corrupt_entropy_loss_coef!=0.0)
+                        batch_encoded_inputs['corrupted_old_per_token_logps'] = cor_logps
+                        if cor_etps is not None:
+                            batch_encoded_inputs['corrupt_entropies'] = cor_etps
+
+                        batch_encoded_inputs['pixel_values'], batch_encoded_inputs['corrupted_images'] = (
+                            batch_encoded_inputs['corrupted_images'], batch_encoded_inputs['pixel_values'])
+                    
+                    assert batch_encoded_inputs['corrupted_old_per_token_logps'].shape == batch_encoded_inputs['old_per_token_logps'].shape, \
+                        f"{batch_encoded_inputs['corrupted_old_per_token_logps'].shape=} not equal to {batch_encoded_inputs['old_per_token_logps'].shape=}"
 
                 # Extract rollout logprobs if available for importance sampling
                 # rollout_logprobs is List[List[float]] - nested list where each inner list corresponds to
@@ -1083,9 +1137,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
         if self.compute_entropy:
             # fill the padded token with NaN
-            entropies = entropies.masked_fill(completion_mask == 0, float('nan'))
-            if self.args.log_entropy:
-                per_completion_entropies_mean = torch.nanmean(entropies, dim=1)
+            entropies_nan = entropies.masked_fill(completion_mask == 0, float('nan'))
+            if self.args.log_entropy or self.entropy_loss_coef != 0.0:
+                per_completion_entropies_mean = torch.nanmean(entropies_nan, dim=1)
                 global_per_completion_entropies_mean = gather(per_completion_entropies_mean)
                 entropy_metrics = {
                     'entropy_logs': global_per_completion_entropies_mean.tolist(),
@@ -1096,9 +1150,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
             # compute the entropy threshold across all tokens in the batch
             if self.args.top_entropy_quantile < 1.0:
-                entropy_threshold = torch.nanquantile(entropies.flatten().float(), 1 - self.top_entropy_quantile)
+                entropy_threshold = torch.nanquantile(entropies_nan.flatten().float(), 1 - self.top_entropy_quantile)
                 entropy_metrics['entropy_threshold'] = entropy_threshold.item()
-                entropy_mask = entropies >= entropy_threshold
+                entropy_mask = entropies_nan >= entropy_threshold
 
         # apply the completion_mask to exclude loss and metrics for overlong completions
         if self.overlong_filter and any(truncated_mask):
@@ -1116,6 +1170,17 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 torch.exp(ref_per_token_logps - per_token_logps) - (ref_per_token_logps - per_token_logps) - 1)
         else:
             per_token_kl = None
+
+        # PAPO: Compute the KL_prcp
+        if self.kl_prcp_coef != 0.0 and 'corrupted_old_per_token_logps' in inputs:
+            corrupted_old_per_token_logps = inputs['corrupted_old_per_token_logps']
+            per_token_kl_prcp = (
+                torch.exp(corrupted_old_per_token_logps - per_token_logps) - (corrupted_old_per_token_logps - per_token_logps) - 1)
+        else:
+            if self.kl_prcp_coef != 0.0:
+                logger.warning(f'"kl_prcp_coef" is set but "corrupted_old_per_token_logps" not found in inputs of global step {self.state.global_step} '
+                               f'(_step: {self._step}) in rank {self.accelerator.process_index}. Skipping KL_prcp computation.')
+            per_token_kl_prcp = None
 
         advantages = inputs['advantages']
         # When under on-policy training
@@ -1203,6 +1268,24 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_token_loss = per_token_loss * entropy_mask
         if per_token_kl is not None:
             per_token_loss = per_token_loss + self.beta * per_token_kl
+        # PAPO three parts of loss
+        if per_token_kl_prcp is not None:
+            per_token_loss = per_token_loss - self.kl_prcp_coef * per_token_kl_prcp
+        if self.entropy_loss_coef != 0.0:
+            per_token_loss = per_token_loss + self.entropy_loss_coef * entropies
+        if self.corrupt_entropy_loss_coef != 0.0:
+            corrupt_entropies = inputs['corrupt_entropies']
+            per_token_loss = per_token_loss + self.corrupt_entropy_loss_coef * corrupt_entropies
+
+            corrupt_entropies_nan = corrupt_entropies.masked_fill(completion_mask == 0, float('nan'))
+            per_completion_corrupt_entropies_mean = torch.nanmean(corrupt_entropies_nan, dim=1)
+            global_per_completion_corrupt_entropies_mean = gather(per_completion_corrupt_entropies_mean)
+            entropy_metrics.update({
+                'corrupt_entropy_logs': global_per_completion_corrupt_entropies_mean.tolist(),
+                'corrupt_entropy_mean': global_per_completion_corrupt_entropies_mean.nanmean().item(),
+                'corrupt_entropy_max': nanmax(global_per_completion_corrupt_entropies_mean).item(),
+                'corrupt_entropy_min': nanmin(global_per_completion_corrupt_entropies_mean).item()
+            })
 
         # Apply vLLM importance sampling weights if available
         if inputs.get('rollout_is_weights') is not None and self.rollout_importance_sampling_mode is not None:
@@ -1257,6 +1340,11 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             mean_kl = masked_batch_mean(per_token_kl)
             metrics_data['kl'] = self.accelerator.gather_for_metrics(mean_kl).nanmean().item()
 
+        # PAPO: add KL_prcp metric
+        if per_token_kl_prcp is not None:
+            mean_kl_prcp = masked_batch_mean(per_token_kl_prcp)
+            metrics_data['kl_prcp'] = self.accelerator.gather_for_metrics(mean_kl_prcp).nanmean().item()
+
         # Add rollout correction metrics
         if rollout_correction_metrics:
             metrics_data['rollout_correction'] = rollout_correction_metrics
@@ -1309,10 +1397,19 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 self._metrics[mode]['entropy/min'].append(entropy_metrics['entropy_min'])
             if 'entropy_threshold' in entropy_metrics:
                 self._metrics[mode]['entropy/threshold'].append(entropy_metrics['entropy_threshold'])
+            if 'corrupt_entropy_logs' in entropy_metrics:
+                self._logs['corrupt_entropy'].extend(entropy_metrics['corrupt_entropy_logs'])
+                self._metrics[mode]['corrupt_entropy/mean'].append(entropy_metrics['corrupt_entropy_mean'])
+                self._metrics[mode]['corrupt_entropy/max'].append(entropy_metrics['corrupt_entropy_max'])
+                self._metrics[mode]['corrupt_entropy/min'].append(entropy_metrics['corrupt_entropy_min'])
 
         # Update KL metrics
         if 'kl' in metrics_data:
             self._metrics[mode]['kl'].append(metrics_data['kl'])
+
+        # PAPO: Update KL_prcp metric
+        if 'kl_prcp' in metrics_data:
+            self._metrics[mode]['kl_prcp'].append(metrics_data['kl_prcp'])
 
         # Update vLLM correction metrics
         if 'rollout_correction' in metrics_data:
@@ -1391,6 +1488,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
         # Separate metrics by type for aggregation
         entropy_logs, entropy_stats, kl_values = [], [], []
+        corrupt_entropy_logs, corrupt_entropy_stats, kl_prcp_values = [], [], []  # PAPO
         clip_values = {'low': [], 'high': [], 'region': [], 'low_min': [], 'high_max': []}
         cispo_clip_values = []
         entropy_thresholds = []
@@ -1410,10 +1508,20 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     })
                 if 'entropy_threshold' in entropy_metrics:
                     entropy_thresholds.append(entropy_metrics['entropy_threshold'])
+                if 'corrupt_entropy_logs' in entropy_metrics: # PAPO
+                    corrupt_entropy_logs.extend(entropy_metrics['corrupt_entropy_logs'])
+                    corrupt_entropy_stats.append({
+                        'mean': entropy_metrics['corrupt_entropy_mean'],
+                        'max': entropy_metrics['corrupt_entropy_max'],
+                        'min': entropy_metrics['corrupt_entropy_min']
+                    })
 
             # Collect KL metrics
             if 'kl' in chunk_metrics:
                 kl_values.append(chunk_metrics['kl'])
+            # PAPO: Collect KL_prcp metrics
+            if 'kl_prcp' in chunk_metrics:
+                kl_prcp_values.append(chunk_metrics['kl_prcp'])
 
             # Collect clipping metrics (weighted by tokens)
             if 'clipping' in chunk_metrics:
@@ -1442,10 +1550,21 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             }
         if entropy_thresholds:
             aggregated_metrics['entropy']['entropy_threshold'] = sum(entropy_thresholds) / len(entropy_thresholds)
+        if corrupt_entropy_logs:  # PAPO
+            # Directly update corrupt entropy logs
+            self._logs['corrupt_entropy'].extend(corrupt_entropy_logs)
+            aggregated_metrics['entropy'].update({
+                'corrupt_entropy_mean': sum(s['mean'] for s in corrupt_entropy_stats) / len(corrupt_entropy_stats),
+                'corrupt_entropy_max': max(s['max'] for s in corrupt_entropy_stats),
+                'corrupt_entropy_min': min(s['min'] for s in corrupt_entropy_stats)
+            })
 
         # Aggregate KL
         if kl_values:
             aggregated_metrics['kl'] = sum(kl_values) / len(kl_values)
+        # PAPO: Aggregate KL_prcp
+        if kl_prcp_values:
+            aggregated_metrics['kl_prcp'] = sum(kl_prcp_values) / len(kl_prcp_values)
 
         # Aggregate clipping (token-weighted averages)
         def weighted_avg(values):
@@ -2073,6 +2192,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 encoded_data = [template.encode(data) for data in origin_data]
                 chunk_inputs.update(to_device(template.data_collator(encoded_data), self.model.device))
                 chunk_inputs.pop('labels', None)
+                if any('corrupted_images' in data for data in origin_data):
+                    raise NotImplementedError('Chunked input processing with corrupted_images is not supported yet.')
         return chunk_inputs
 
     def _prepare_liger_loss(self):
@@ -2107,9 +2228,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             'rewards': defaultdict(lambda: deque(maxlen=args.generation_batch_size)),
             'advantages': deque(maxlen=args.generation_batch_size),
         }
-        self.compute_entropy = self.args.log_entropy or self.top_entropy_quantile < 1.0
+        self.compute_entropy = self.args.log_entropy or self.top_entropy_quantile < 1.0 or self.entropy_loss_coef != 0.0
         if self.args.log_entropy:
             self._logs.update({'entropy': deque(maxlen=args.generation_batch_size)})
+        # PAPO
+        if self.corrupt_entropy_loss_coef != 0.0:
+            self._logs.update({'corrupt_entropy': deque(maxlen=args.generation_batch_size)})
 
     def _collect_config_info(self) -> Dict[str, str]:
         config = {
@@ -2153,6 +2277,22 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # RLOO,
         self.advantage_estimator = args.advantage_estimator
         self.kl_in_reward = args.kl_in_reward
+
+        # For PAPO, VPPO, ToR
+        self.corrupt_image = args.corrupt_image
+        if self.corrupt_image:
+            assert self.is_multimodal, f'"corrupt_image" option is only for multimodal training.'
+        self.corrupt_image_kwargs = args.corrupt_image_kwargs
+        self.corrupt_image_position = args.corrupt_image_position
+        # PAPO
+        self.kl_prcp_coef = args.kl_prcp_coef
+        self.kl_prcp_schedule = args.kl_prcp_schedule
+        self.kl_prcp_schedule_args = args.kl_prcp_schedule_args
+        self.corrupt_entropy_loss_coef = args.corrupt_entropy_loss_coef
+        self.entropy_loss_coef = args.entropy_loss_coef
+        if self.kl_prcp_coef != 0.0 or self.corrupt_entropy_loss_coef != 0.0:
+            assert self.corrupt_image, \
+                f"Setting 'kl_prcp_coef' or 'corrupt_entropy_loss_coef' requires 'corrupt_image' not to be empty."
 
         # Rollout Importance Sampling Correction
         self.rollout_importance_sampling_mode = args.rollout_importance_sampling_mode
@@ -2594,7 +2734,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             k: v
             for k, v in inputs.items() if k not in [
                 'logits_to_keep', 'completion_mask', 'ref_per_token_logps', 'advantages', 'old_per_token_logps',
-                'truncated_mask', 'seq_lengths', 'num_items_in_batch', 'rollout_per_token_logps'
+                'truncated_mask', 'seq_lengths', 'num_items_in_batch', 'rollout_per_token_logps',
+                'corrupted_old_per_token_logps', 'corrupt_entropies'
             ]
         }
 

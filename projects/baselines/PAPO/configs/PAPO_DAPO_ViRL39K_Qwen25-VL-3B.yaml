@@ -1,6 +1,17 @@
-# config for reproduce DAPO baseline on ViRL39K in PAPO
+# config for reproduce PAPO-DAPO on ViRL39K with Qwen2.5-VL-3B
+
+# PAPO args
+corrupt_image: random_patch
+corrupt_image_kwargs:
+  black_prob: 0.6
+corrupt_image_position: prompt
+kl_prcp_coef: 0.01
+corrupt_entropy_loss_coef: 0.03
+entropy_loss_coef: 0.03
 
 # model args
+model: Qwen/Qwen2.5-VL-3B-Instruct
+output_dir: outputs/baselines/PAPO/1_PAPO_DAPO_ViRL39K_Qwen25VL-3B
 torch_dtype: bfloat16
 attn_impl: flash_attn
 freeze_vit: false

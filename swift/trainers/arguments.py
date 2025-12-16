@@ -601,6 +601,9 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     kl_prcp_schedule_args: Optional[Union[dict, str]] = None # TODO implement annealing
     corrupt_entropy_loss_coef: float = 0.0 # aug_entropy_loss_coef in PAPO
     entropy_loss_coef: float = 0.0 # ori_entropy_loss_coef in PAPO
+    # VPPO
+    top_perception_quantile: float = 1.0 # top_p_perception_tokens in VPPO
+    kl_prcp_reference: Literal["current", "old"] = "current" # reference model for KL_prcp, should be "current" for PAPO and "old" for VPPO
 
     generation_batch_size: Optional[int] = None
     steps_per_generation: Optional[int] = None

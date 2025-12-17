@@ -603,7 +603,10 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     entropy_loss_coef: float = 0.0 # ori_entropy_loss_coef in PAPO
     # VPPO
     top_perception_quantile: float = 1.0 # top_p_perception_tokens in VPPO
-    kl_prcp_reference: Literal["current", "old"] = "current" # reference model for KL_prcp, should be "current" for PAPO and "old" for VPPO
+    kl_prcp_reference: Literal['current', 'old'] = 'current' # reference model for KL_prcp, should be "current" for PAPO and "old" for VPPO
+    entropy_thr_granularity: Literal['batch', 'completion'] = 'batch' # set to 'completion' for VPPO
+    vppo_use_advantage_shaping: bool = False
+    vppo_advantage_scaling_min: float = 0.9
 
     generation_batch_size: Optional[int] = None
     steps_per_generation: Optional[int] = None

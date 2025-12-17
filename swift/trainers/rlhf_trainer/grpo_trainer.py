@@ -807,6 +807,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         corrupted_batch_encoded_inputs.append(template.encode(data, return_length=True))
                     batch_encoded_inputs['corrupted_images'] = to_device(
                         template.data_collator(corrupted_batch_encoded_inputs)['pixel_values'], self.model.device)
+                    assert batch_encoded_inputs['corrupted_images'].shape == batch_encoded_inputs['pixel_values'].shape, \
+                        f'({batch_encoded_inputs["corrupted_images"].shape=}) != ({batch_encoded_inputs["pixel_values"].shape=})'
 
                 if self.dynamic_num_samples and self.is_multimodal:
                     batch_encoded_inputs['_origin_data'] = batch

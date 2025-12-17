@@ -1,10 +1,10 @@
 import hashlib
+from copy import deepcopy
 from functools import partial
 from typing import Dict, Any, TYPE_CHECKING
 
 import numpy as np
 from PIL import Image
-from accelerate.utils import gather, gather_object
 
 from .rollout_mixin import DataType
 from ...llm.template.vision_utils import load_image
@@ -16,6 +16,26 @@ def _stable_prompt_seed(prompt_id: str, salt: str = "corrupt_prompt_v1") -> int:
     s = f"{salt}:{prompt_id}".encode("utf-8")
     h = hashlib.sha256(s).digest()
     return int.from_bytes(h[:8], "little", signed=False)
+
+
+def _bytes_sig(b: bytes):
+    if len(b) <= 8192:
+        data = b
+    else:
+        data = b[:4096] + b[-4096:]
+    return hashlib.blake2b(data, digest_size=16).digest()
+
+
+def _image_signature(imgs):
+    sig = []
+    for img in imgs:
+        if isinstance(img, dict):
+            img = (img.get('bytes') or img.get('path')) if 'bytes' in img else img['path']
+        if isinstance(img, (bytes, bytearray)):
+            sig.append(("bytes", _bytes_sig(img)))
+        else:
+            sig.append(("path", str(img)))
+    return tuple(sig)
 
 
 def get_corrupted_images_for_input(trainer: 'GRPOTrainer', inputs: DataType) -> DataType:
@@ -50,8 +70,9 @@ def get_corrupted_images_for_input(trainer: 'GRPOTrainer', inputs: DataType) -> 
                 raise KeyError("corrupt_image_position='prompt' requires each input to have 'prompt_id'.")
 
             pid = inp['prompt_id'] + f'_step:{trainer._step}'
-            if pid in prompt_cache:
-                inp['corrupted_images'] = prompt_cache[pid]
+            img_sig = _image_signature(inp["images"])
+            if (pid, img_sig) in prompt_cache:
+                inp['corrupted_images'] = deepcopy(prompt_cache[(pid, img_sig)])
                 continue
 
             seed_base = _stable_prompt_seed(pid)
@@ -63,7 +84,7 @@ def get_corrupted_images_for_input(trainer: 'GRPOTrainer', inputs: DataType) -> 
                 img = load_image(img)
                 corrupted_images.append(corrupt_func(img, seed=seed_base+img_idx))
 
-            prompt_cache[pid] = corrupted_images
+            prompt_cache[(pid, img_sig)] = corrupted_images
             inp['corrupted_images'] = corrupted_images
     
     else:

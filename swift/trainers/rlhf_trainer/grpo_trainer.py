@@ -807,6 +807,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         corrupted_batch_encoded_inputs.append(template.encode(data, return_length=True))
                     batch_encoded_inputs['corrupted_images'] = to_device(
                         template.data_collator(corrupted_batch_encoded_inputs)['pixel_values'], self.model.device)
+                    assert batch_encoded_inputs['corrupted_images'].shape == batch_encoded_inputs['pixel_values'].shape, \
+                        f'({batch_encoded_inputs["corrupted_images"].shape=}) != ({batch_encoded_inputs["pixel_values"].shape=})'
 
                 if self.dynamic_num_samples and self.is_multimodal:
                     batch_encoded_inputs['_origin_data'] = batch
@@ -1101,8 +1103,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # PAPO: Compute the KL_prcp
         if self.kl_prcp_coef != 0.0 and 'corrupted_old_per_token_logps' in inputs:
             corrupted_old_per_token_logps = inputs['corrupted_old_per_token_logps']
-            per_token_kl_prcp = (
-                torch.exp(corrupted_old_per_token_logps - per_token_logps) - (corrupted_old_per_token_logps - per_token_logps) - 1)
+            per_token_kl_prcp = (corrupted_old_per_token_logps - per_token_logps).clamp(-20.0, 20.0)
+            per_token_kl_prcp = (per_token_kl_prcp.exp() - per_token_kl_prcp - 1).contiguous()
+            per_token_kl_prcp = torch.clamp(per_token_kl_prcp, min=-10.0, max=10.0)
         else:
             if self.kl_prcp_coef != 0.0:
                 logger.warning(f'"kl_prcp_coef" is set but "corrupted_old_per_token_logps" not found in inputs of global step {self.state.global_step} '

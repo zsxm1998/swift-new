@@ -31,7 +31,7 @@ logging_steps: 1
 save_strategy: steps
 save_steps: 150
 save_total_limit: 2
-save_only_model: true
+save_only_model: false
 report_to: swanlab
 swanlab_project: PAPO-Reproduce
 

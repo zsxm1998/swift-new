@@ -1083,6 +1083,37 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 final_num_turns = num_turns_all[last_indices]
                 self._metrics[mode]['num_turns'].append(final_num_turns.float().mean().item())
 
+        # --- VPPO: Compute global_min_score and global_max_score ---
+        # Warning: This implementation is not equal to the original VPPO paper, which computes on local mini batch level.
+        # But we computes on the local generation batch level.
+        if self.vppo_use_advantage_shaping:
+            assert not template.padding_free, '"padding_free" is not supported for VPPO advantage shaping yet.'
+            with torch.no_grad():
+                ga_batch_sensitivity_scores = []
+                for batch_encoded in ga_batch_encoded_inputs:
+                    old_log_probs = batch_encoded['old_per_token_logps']
+                    cor_log_probs = batch_encoded['corrupted_old_per_token_logps']
+                    completion_mask = batch_encoded['completion_mask']
+
+                    log_probs_diff = (cor_log_probs - old_log_probs).clamp(-20.0, 20.0)
+                    low_var_kl = (log_probs_diff.exp() - log_probs_diff - 1).contiguous()
+                    low_var_kl = torch.clamp(low_var_kl, min=0.0, max=10.0)
+
+                    num_valid_tokens = completion_mask.sum(dim=1)
+                    batch_sensitivity_scores = (low_var_kl*completion_mask).sum(1) / num_valid_tokens.clamp(min=1.0)
+                    batch_sensitivity_scores = batch_sensitivity_scores[num_valid_tokens > 0]
+                    ga_batch_sensitivity_scores.append(batch_sensitivity_scores)
+                
+                ga_batch_sensitivity_scores = torch.cat(ga_batch_sensitivity_scores, dim=0) # 这里后续可以选择gather全局数值
+                if ga_batch_sensitivity_scores.numel() > 1:
+                    # global_min_score = torch.quantile(ga_batch_sensitivity_scores, 0.0) # 使用0%分位数作为下限
+                    # global_max_score = torch.quantile(ga_batch_sensitivity_scores, 1.0) # 使用100%分位数作为上限
+                    global_min_score = ga_batch_sensitivity_scores.min()
+                    global_max_score = ga_batch_sensitivity_scores.max()
+                    for batch_encoded in ga_batch_encoded_inputs:
+                        batch_encoded['vppo_global_min_score'] = global_min_score
+                        batch_encoded['vppo_global_max_score'] = global_max_score
+
         return ga_batch_encoded_inputs
 
     def _apply_chat_template_to_messages_list(self, messages_list: DataType):
@@ -1136,6 +1167,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
         entropy_mask = None
         entropy_metrics = {}
+        vppo_tas_metrics = {} # VPPO TAS metrics to log
 
         if self.compute_entropy:
             # fill the padded token with NaN
@@ -1152,8 +1184,16 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
             # compute the entropy threshold across all tokens in the batch
             if self.args.top_entropy_quantile < 1.0:
-                entropy_threshold = torch.nanquantile(entropies_nan.flatten().float(), 1 - self.top_entropy_quantile)
-                entropy_metrics['entropy_threshold'] = entropy_threshold.item()
+                if self.entropy_thr_granularity == 'batch':
+                    entropy_threshold = torch.nanquantile(entropies_nan.flatten().float(), 1 - self.top_entropy_quantile)
+                    entropy_metrics['entropy_threshold'] = entropy_threshold.item()
+                elif self.entropy_thr_granularity == 'completion': # 这里应该不支持padding_free，需要改进
+                    assert not self.template.padding_free, '"padding_free" for "entropy_thr_granularity=completion" is not supported yet.'
+                    entropy_threshold = torch.nanquantile(entropies_nan.float(), 1-self.top_entropy_quantile, 1, keepdim=True)
+                    global_entropy_threshold = gather(entropy_threshold.squeeze(1))
+                    entropy_metrics['entropy_threshold'] = global_entropy_threshold.nanmean().item()
+                else:
+                    raise ValueError(f'Got invalid entropy_thr_granularity: {self.entropy_thr_granularity}, should be "batch" or "completion"')
                 entropy_mask = entropies_nan >= entropy_threshold
 
         # apply the completion_mask to exclude loss and metrics for overlong completions
@@ -1216,9 +1256,46 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, float('nan'))
             perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.float(), 1-self.top_perception_quantile, 1, keepdim=True)
             perception_mask = per_token_kl_prcp_nan >= perception_threshold
-            global_perception_threshold = gather(perception_threshold.squeeze(1))
-            metrics_data['perception_threshold'] = global_perception_threshold.nanmean().item()
 
+        # VPPO: Compute and apply the advantage scaling factor
+        if self.vppo_use_advantage_shaping:
+            with torch.no_grad():
+                num_valid_tokens = completion_mask.sum(dim=1)
+                valid_scores_mask = num_valid_tokens > 0
+                sensitivity_scores = (per_token_kl_prcp*completion_mask).sum(1) / num_valid_tokens.clamp(min=1.0)
+                scaling_factors = torch.ones_like(sensitivity_scores)
+                
+                global_min_score = inputs.get('vppo_global_min_score', torch.tensor(0.0, device=sensitivity_scores.device))
+                global_max_score = inputs.get('vppo_global_max_score', torch.tensor(0.0, device=sensitivity_scores.device))
+                if (global_max_score - global_min_score) > 1e-6:
+                    valid_scores = sensitivity_scores[valid_scores_mask]
+
+                    # Normalize scores using the global min/max and clamp to [0, 1] for robustness.
+                    normalized_scores = (valid_scores - global_min_score) / (global_max_score - global_min_score)
+                    normalized_scores = torch.clamp(normalized_scores, 0.0, 1.0)
+
+                    # Gain the beta_min and beta_max of TAS
+                    tas_beta_min = self.vppo_advantage_scaling_min
+                    mu_norm = normalized_scores.mean()
+                    tas_beta_max = tas_beta_min + (1.0 - tas_beta_min) / (mu_norm + 1e-8) # Dynamically calculate beta_max
+                    vppo_tas_metrics['dynamic_tas_beta_max'] = self.accelerator.gather_for_metrics(tas_beta_max).nanmean().item()
+
+                    # Map normalized scores to the DYNAMIC range [tas_beta_min, tas_beta_max].
+                    tas_range = tas_beta_max - tas_beta_min
+                    mapped_scores = tas_beta_min + normalized_scores * tas_range
+                    scaling_factors[valid_scores_mask] = mapped_scores
+
+                # Log metrics of TAS
+                vppo_tas_metrics['sensitivity_score'] = \
+                    self.accelerator.gather_for_metrics(sensitivity_scores[valid_scores_mask]).nanmean().item()
+                vppo_tas_metrics['global_sensitivity_score_min'] = \
+                    self.accelerator.gather_for_metrics(global_min_score).nanmean().item()
+                vppo_tas_metrics['global_sensitivity_score_max'] = \
+                    self.accelerator.gather_for_metrics(global_max_score).nanmean().item()
+
+            # Apply the final scaling factor to the advantages.
+            advantages = advantages * scaling_factors
+        
         # Compute rollout diagnostic metrics and apply IS correction if enabled
         rollout_correction_metrics = {}
         should_compute_rollout_metrics = (
@@ -1381,6 +1458,14 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             mean_kl_prcp = masked_batch_mean(per_token_kl_prcp)
             metrics_data['kl_prcp'] = self.accelerator.gather_for_metrics(mean_kl_prcp).nanmean().item()
 
+        # VPPO: add perception threshold metric
+        if perception_mask is not None:
+            metrics_data['perception_threshold'] = self.accelerator.gather_for_metrics(perception_threshold.squeeze(1)).nanmean().item()
+            
+        # VPPO: add TAS metrics
+        if vppo_tas_metrics:
+            metrics_data['vppo_advantage_shaping'] = vppo_tas_metrics
+
         # Add rollout correction metrics
         if rollout_correction_metrics:
             metrics_data['rollout_correction'] = rollout_correction_metrics
@@ -1450,6 +1535,17 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # VPPO: Update perception_threshold metric
         if 'perception_threshold' in metrics_data:
             self._metrics[mode]['perception_threshold'].append(metrics_data['perception_threshold'])
+
+        # VPPO: Update TAS metrics
+        if 'vppo_advantage_shaping' in metrics_data:
+            vppo_tas_metrics = metrics_data['vppo_advantage_shaping']
+            self._metrics[mode]['VPPO_TAS/sensitivity_score'].append(vppo_tas_metrics['sensitivity_score'])
+            self._metrics[mode]['VPPO_TAS/global_sensitivity_score_max'].append(vppo_tas_metrics['global_sensitivity_score_max'])
+            self._metrics[mode]['VPPO_TAS/global_sensitivity_score_min'].append(vppo_tas_metrics['global_sensitivity_score_min'])
+            if 'dynamic_tas_beta_max' in vppo_tas_metrics:
+                self._metrics[mode]['VPPO_TAS/dynamic_beta_max'].append(vppo_tas_metrics['dynamic_tas_beta_max'])
+            else:
+                self._metrics[mode]['VPPO_TAS/dynamic_beta_max'].append(0)
 
         # Update vLLM correction metrics
         if 'rollout_correction' in metrics_data:
@@ -1529,7 +1625,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # Separate metrics by type for aggregation
         entropy_logs, entropy_stats, kl_values = [], [], []
         corrupt_entropy_logs, corrupt_entropy_stats, kl_prcp_values = [], [], []  # PAPO
-        perception_threshold_values = []  # VPPO
+        perception_threshold_values, tas_stats = [], []  # VPPO
         clip_values = {'low': [], 'high': [], 'region': [], 'low_min': [], 'high_max': []}
         cispo_clip_values = []
         entropy_thresholds = []
@@ -1566,6 +1662,15 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             # VPPO: Collect perception threshold metrics
             if 'perception_threshold' in chunk_metrics:
                 perception_threshold_values.append(chunk_metrics['perception_threshold'])
+            # VPPO: Collect TAS metrics
+            if 'vppo_advantage_shaping' in chunk_metrics:
+                vppo_tas_metrics = chunk_metrics['vppo_advantage_shaping']
+                tas_stats.append({
+                    'sensitivity_score': vppo_tas_metrics['sensitivity_score'],
+                    'global_sensitivity_score_max': vppo_tas_metrics['global_sensitivity_score_max'],
+                    'global_sensitivity_score_min': vppo_tas_metrics['global_sensitivity_score_min'],
+                    'dynamic_tas_beta_max': vppo_tas_metrics.get('dynamic_tas_beta_max', 0)
+                })
 
             # Collect clipping metrics (weighted by tokens)
             if 'clipping' in chunk_metrics:
@@ -1612,6 +1717,14 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # VPPO: Aggregate perception_threshold
         if perception_threshold_values:
             aggregated_metrics['perception_threshold'] = sum(perception_threshold_values) / len(perception_threshold_values)
+        # VPPO: Aggregate TAS metrics
+        if tas_stats:
+            aggregated_metrics['vppo_advantage_shaping'] = {
+                'sensitivity_score': sum(s['sensitivity_score'] for s in tas_stats) / len(tas_stats),
+                'global_sensitivity_score_max': sum(s['global_sensitivity_score_max'] for s in tas_stats) / len(tas_stats),
+                'global_sensitivity_score_min': sum(s['global_sensitivity_score_min'] for s in tas_stats) / len(tas_stats),
+                'dynamic_tas_beta_max': sum(s['dynamic_tas_beta_max'] for s in tas_stats) / len(tas_stats)
+            }
 
         # Aggregate clipping (token-weighted averages)
         def weighted_avg(values):
@@ -2340,14 +2453,17 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # VPPO
         self.top_perception_quantile = args.top_perception_quantile
         self.kl_prcp_reference = args.kl_prcp_reference
+        self.entropy_thr_granularity = args.entropy_thr_granularity
+        self.vppo_use_advantage_shaping = args.vppo_use_advantage_shaping
+        self.vppo_advantage_scaling_min = args.vppo_advantage_scaling_min
         # check for PAPO, VPPO, ToR
-        if self.kl_prcp_coef != 0.0 or self.corrupt_entropy_loss_coef != 0.0 or self.top_perception_quantile < 1.0:
-            assert self.corrupt_image, \
-                f"Setting 'kl_prcp_coef' or 'corrupt_entropy_loss_coef' requires 'corrupt_image' not to be empty."
+        if self.kl_prcp_coef != 0.0 or self.corrupt_entropy_loss_coef != 0.0 \
+        or self.top_perception_quantile < 1.0 or self.vppo_use_advantage_shaping:
+            assert self.corrupt_image, ("Setting one of 'kl_prcp_coef', 'corrupt_entropy_loss_coef', 'top_perception_quantile', "
+                "'vppo_use_advantage_shaping' requires 'corrupt_image' not to be empty.")
         if self.kl_prcp_coef != 0.0:
             assert self.kl_prcp_reference == 'current', \
                 f"'kl_prcp_reference' must be 'current' not '{self.kl_prcp_reference}' for loss back propagation."
-
 
         # Rollout Importance Sampling Correction
         self.rollout_importance_sampling_mode = args.rollout_importance_sampling_mode

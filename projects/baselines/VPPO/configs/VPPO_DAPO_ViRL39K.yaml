@@ -7,6 +7,7 @@ corrupt_image_kwargs:
   black_prob: 0.5
 corrupt_image_position: completion
 top_perception_quantile: 0.4
+perception_thr_granularity: completion
 kl_prcp_reference: old
 vppo_use_advantage_shaping: true
 vppo_advantage_scaling_min: 0.9

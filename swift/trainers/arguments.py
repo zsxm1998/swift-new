@@ -604,9 +604,14 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     # VPPO
     top_perception_quantile: float = 1.0 # top_p_perception_tokens in VPPO
     kl_prcp_reference: Literal['current', 'old'] = 'current' # reference model for KL_prcp, should be "current" for PAPO and "old" for VPPO
-    entropy_thr_granularity: Literal['batch', 'completion'] = 'batch' # set to 'completion' for VPPO, batch for ToR
+    entropy_thr_granularity: Literal['batch', 'completion'] = 'batch' # set to 'completion' for VPPO, batch for ToR and 80-20 paper
     vppo_use_advantage_shaping: bool = False
     vppo_advantage_scaling_min: float = 0.9
+    # ToR
+    tor_use_token_weighting: bool = False
+    tor_rsn_weight: float = 1.0
+    tor_prcp_weight: float = 0.5
+    perception_thr_granularity: Literal['batch', 'completion'] = 'batch' # set to 'completion' for VPPO, batch for ToR
 
     generation_batch_size: Optional[int] = None
     steps_per_generation: Optional[int] = None

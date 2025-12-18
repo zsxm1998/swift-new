@@ -1,0 +1,75 @@
+# config for reproduce DAPO baseline on Geometry3K in ToR
+
+# ToR args
+corrupt_image: no_image
+tor_use_token_weighting: true
+tor_rsn_weight: 1.0
+top_entropy_quantile: 0.3
+entropy_thr_granularity: batch
+tor_prcp_weight: 0.5
+top_perception_quantile: 0.3
+perception_thr_granularity: batch
+kl_prcp_reference: old
+
+# model args
+model: Qwen/Qwen2.5-VL-7B-Instruct
+output_dir: outputs/baselines/ToR/1_ToR_DAPO_Geometry3K
+torch_dtype: bfloat16
+attn_impl: flash_attn
+
+# data args
+dataset: 'hf::hiyouga/geometry3k:train'
+val_dataset: 'hf::hiyouga/geometry3k:validation'
+dataset_num_proc: 8
+load_from_cache_file: true
+system: 'examples/train/grpo/prompt.txt'
+dataloader_num_workers: 4
+max_length: 8192
+
+# train args
+train_type: full
+deepspeed: zero3
+gradient_checkpointing: true
+num_train_epochs: 4
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 6
+gradient_accumulation_steps: 48
+learning_rate: 1e-6
+warmup_ratio: 0.05
+
+# log, val and save args
+logging_steps: 1
+save_strategy: steps
+save_steps: 20
+save_total_limit: 5
+save_only_model: false
+report_to: swanlab
+swanlab_project: ToR-Reproduce
+
+# rlhf args
+rlhf_type: grpo
+loss_type: dapo
+num_generations: 12
+steps_per_generation: 192
+beta: 0
+epsilon_high: 0.28
+dynamic_sample: true
+max_resample_times: 3
+overlong_filter: true
+soft_cache_length: 1024
+num_iterations: 1
+reward_funcs: [accuracy, format, soft_overlong]
+log_completions: true
+log_entropy: true
+
+# rollout args
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.5
+vllm_tensor_parallel_size: 4
+vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置
+vllm_engine_kwargs:
+  max_num_batched_tokens: 4096
+sleep_level: 1
+max_completion_length: 5120
+temperature: 0.95

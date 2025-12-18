@@ -6,6 +6,7 @@ corrupt_image_kwargs:
   black_prob: 0.6
 corrupt_image_position: prompt
 kl_prcp_coef: 0.02
+kl_prcp_reference: current
 corrupt_entropy_loss_coef: 0.0
 entropy_loss_coef: 0.0
 

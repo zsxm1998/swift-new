@@ -1113,7 +1113,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             if self.args.top_entropy_quantile < 1.0:
                 if self.entropy_thr_granularity == 'batch':
                     entropy_threshold = torch.nanquantile(entropies_nan.flatten().float(), 1 - self.top_entropy_quantile)
-                    entropy_metrics['entropy_threshold'] = entropy_threshold.item()
+                    entropy_metrics['entropy_threshold'] = self.accelerator.reduce(entropy_threshold, reduction='mean').item()
                 elif self.entropy_thr_granularity == 'completion': # 这里应该不支持padding_free，需要改进
                     assert not self.template.padding_free, '"padding_free" for "entropy_thr_granularity=completion" is not supported yet.'
                     entropy_threshold = torch.nanquantile(entropies_nan.float(), 1-self.top_entropy_quantile, 1, keepdim=True)
@@ -1165,11 +1165,20 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                f'(_step: {self._step}) in rank {self.accelerator.process_index}. Skipping KL_prcp computation.')
             per_token_kl_prcp = None
 
-        # VPPO: Compute the perception mask
+        # VPPO/ToR: Compute the perception mask
         perception_mask = None
         if self.top_perception_quantile < 1.0 and per_token_kl_prcp is not None:
             per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, torch.nan)
-            perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.float(), 1-self.top_perception_quantile, 1, keepdim=True)
+            if self.perception_thr_granularity == 'batch':
+                perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.flatten().float(), 1 - self.top_perception_quantile)
+                metrics_data['perception_threshold'] = self.accelerator.reduce(perception_threshold, reduction='mean').item()
+            elif self.perception_thr_granularity == 'completion': # 这里应该不支持padding_free，需要改进
+                assert not self.template.padding_free, '"padding_free" for "perception_thr_granularity=completion" is not supported yet.'
+                perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.float(), 1-self.top_perception_quantile, 1, keepdim=True)
+                global_perception_threshold = self.accelerator.gather_for_metrics(perception_threshold.squeeze(1))
+                metrics_data['perception_threshold'] = global_perception_threshold.nanmean().item()
+            else:
+                raise ValueError(f'Got invalid perception_thr_granularity: {self.perception_thr_granularity}, should be "batch" or "completion"')
             perception_mask = per_token_kl_prcp_nan >= perception_threshold
 
         # VPPO: Compute and apply the advantage scaling factor
@@ -1281,11 +1290,21 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_token_loss2 = coef_2 * advantages.unsqueeze(1)
             per_token_loss = -torch.min(per_token_loss1, per_token_loss2)
         
-        if entropy_mask is not None:
-            per_token_loss = per_token_loss * entropy_mask
-        # VPPO perception mask, should be applied before KL loss according to VPPO
-        if perception_mask is not None:
-            per_token_loss = per_token_loss * perception_mask
+        # Apply entropy mask and perception mask if available
+        if entropy_mask is not None or perception_mask is not None:
+            if self.tor_use_token_weighting:
+                if entropy_mask is not None and perception_mask is not None:
+                    perception_mask = perception_mask & (~entropy_mask)
+                combined_weight = (
+                    (entropy_mask * self.tor_rsn_weight if entropy_mask is not None else 0) +
+                    (perception_mask * self.tor_prcp_weight if perception_mask is not None else 0)
+                )
+                per_token_loss = per_token_loss * combined_weight
+            else:
+                if entropy_mask is not None and perception_mask is not None:
+                    per_token_loss = per_token_loss * (entropy_mask | perception_mask)
+                else:
+                    per_token_loss = per_token_loss * (entropy_mask if entropy_mask is not None else perception_mask)
         
         if per_token_kl is not None:
             per_token_loss = per_token_loss + self.beta * per_token_kl
@@ -1359,10 +1378,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_completion_kl_prcp_mean = torch.nanmean(per_token_kl_prcp_nan, dim=1)
             global_per_completion_kl_prcp_mean = gather(per_completion_kl_prcp_mean)
             metrics_data['kl_prcp_logs'] = global_per_completion_kl_prcp_mean.tolist(),
-
-        # VPPO: add perception threshold metric
-        if perception_mask is not None:
-            metrics_data['perception_threshold'] = self.accelerator.gather_for_metrics(perception_threshold.squeeze(1)).nanmean().item()
             
         # VPPO: add TAS metrics
         if vppo_tas_metrics:
@@ -2424,6 +2439,11 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         self.entropy_thr_granularity = args.entropy_thr_granularity
         self.vppo_use_advantage_shaping = args.vppo_use_advantage_shaping
         self.vppo_advantage_scaling_min = args.vppo_advantage_scaling_min
+        # ToR
+        self.tor_use_token_weighting = args.tor_use_token_weighting
+        self.tor_rsn_weight = args.tor_rsn_weight
+        self.tor_prcp_weight = args.tor_prcp_weight
+        self.perception_thr_granularity = args.perception_thr_granularity
         # check for PAPO, VPPO, ToR
         if self.kl_prcp_coef != 0.0 or self.corrupt_entropy_loss_coef != 0.0 \
         or self.top_perception_quantile < 1.0 or self.vppo_use_advantage_shaping:
@@ -2432,6 +2452,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if self.kl_prcp_coef != 0.0:
             assert self.kl_prcp_reference == 'current', \
                 f"'kl_prcp_reference' must be 'current' not '{self.kl_prcp_reference}' for loss back propagation."
+        if self.tor_use_token_weighting:
+            assert self.top_entropy_quantile < 1.0 or self.top_perception_quantile < 1.0, \
+                "'tor_use_token_weighting' requires 'top_entropy_quantile' < 1.0 or 'top_perception_quantile' < 1.0."
 
         # Rollout Importance Sampling Correction
         self.rollout_importance_sampling_mode = args.rollout_importance_sampling_mode

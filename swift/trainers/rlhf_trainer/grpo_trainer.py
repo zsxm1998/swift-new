@@ -1233,7 +1233,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_token_logps.detach() if inputs['old_per_token_logps'] is None else inputs['old_per_token_logps'])
         
         # PAPO/VPPO: Compute the KL_prcp
-        if (self.kl_prcp_coef != 0.0 or self.top_perception_quantile < 1.0) and 'corrupted_old_per_token_logps' in inputs:
+        if self.compute_kl_prcp and 'corrupted_old_per_token_logps' in inputs:
             corrupted_old_per_token_logps = inputs['corrupted_old_per_token_logps']
             if self.kl_prcp_reference == 'current':
                 kl_prcp_reference_logps = per_token_logps
@@ -1244,16 +1244,16 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_token_kl_prcp = (per_token_kl_prcp.exp() - per_token_kl_prcp - 1).contiguous()
             per_token_kl_prcp = torch.clamp(per_token_kl_prcp, min=-10.0 if self.kl_prcp_reference == 'current' else 0.0, max=10.0)
         else:
-            if self.kl_prcp_coef != 0.0 or self.top_perception_quantile < 1.0:
-                logger.warning(f'"kl_prcp_coef" or "top_perception_quantile" is set but "corrupted_old_per_token_logps" '
-                               f'not found in inputs of global step {self.state.global_step} '
+            if self.compute_kl_prcp:
+                logger.warning(f'"kl_prcp_coef" or "top_perception_quantile" or "vppo_use_advantage_shaping" is set, '
+                               f'but "corrupted_old_per_token_logps" not found in inputs of global step {self.state.global_step} '
                                f'(_step: {self._step}) in rank {self.accelerator.process_index}. Skipping KL_prcp computation.')
             per_token_kl_prcp = None
 
         # VPPO: Compute the perception mask
         perception_mask = None
         if self.top_perception_quantile < 1.0 and per_token_kl_prcp is not None:
-            per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, float('nan'))
+            per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, torch.nan)
             perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.float(), 1-self.top_perception_quantile, 1, keepdim=True)
             perception_mask = per_token_kl_prcp_nan >= perception_threshold
 
@@ -1390,7 +1390,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             corrupt_entropies = inputs['corrupt_entropies']
             per_token_loss = per_token_loss + self.corrupt_entropy_loss_coef * corrupt_entropies
 
-            corrupt_entropies_nan = corrupt_entropies.masked_fill(completion_mask == 0, float('nan'))
+            corrupt_entropies_nan = corrupt_entropies.masked_fill(completion_mask == 0, torch.nan)
             per_completion_corrupt_entropies_mean = torch.nanmean(corrupt_entropies_nan, dim=1)
             global_per_completion_corrupt_entropies_mean = gather(per_completion_corrupt_entropies_mean)
             entropy_metrics.update({
@@ -1457,6 +1457,11 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if per_token_kl_prcp is not None:
             mean_kl_prcp = masked_batch_mean(per_token_kl_prcp)
             metrics_data['kl_prcp'] = self.accelerator.gather_for_metrics(mean_kl_prcp).nanmean().item()
+            # Also log per-completion KL_prcp mean for analysis
+            per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, torch.nan)
+            per_completion_kl_prcp_mean = torch.nanmean(per_token_kl_prcp_nan, dim=1)
+            global_per_completion_kl_prcp_mean = gather(per_completion_kl_prcp_mean)
+            metrics_data['kl_prcp_logs'] = global_per_completion_kl_prcp_mean.tolist(),
 
         # VPPO: add perception threshold metric
         if perception_mask is not None:
@@ -1531,6 +1536,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # PAPO: Update KL_prcp metric
         if 'kl_prcp' in metrics_data:
             self._metrics[mode]['kl_prcp'].append(metrics_data['kl_prcp'])
+        if 'kl_prcp_logs' in metrics_data:
+            self._logs['kl_prcp'].extend(metrics_data['kl_prcp_logs'])
 
         # VPPO: Update perception_threshold metric
         if 'perception_threshold' in metrics_data:
@@ -1626,6 +1633,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         entropy_logs, entropy_stats, kl_values = [], [], []
         corrupt_entropy_logs, corrupt_entropy_stats, kl_prcp_values = [], [], []  # PAPO
         perception_threshold_values, tas_stats = [], []  # VPPO
+        kl_prcp_logs = [] # PAPO/VPPO/ToR
         clip_values = {'low': [], 'high': [], 'region': [], 'low_min': [], 'high_max': []}
         cispo_clip_values = []
         entropy_thresholds = []
@@ -1659,6 +1667,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             # PAPO: Collect KL_prcp metrics
             if 'kl_prcp' in chunk_metrics:
                 kl_prcp_values.append(chunk_metrics['kl_prcp'])
+            if 'kl_prcp_logs' in chunk_metrics:
+                kl_prcp_logs.extend(chunk_metrics['kl_prcp_logs'])
             # VPPO: Collect perception threshold metrics
             if 'perception_threshold' in chunk_metrics:
                 perception_threshold_values.append(chunk_metrics['perception_threshold'])
@@ -1700,9 +1710,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if entropy_thresholds:
             aggregated_metrics['entropy']['entropy_threshold'] = sum(entropy_thresholds) / len(entropy_thresholds)
         if corrupt_entropy_logs:  # PAPO
-            # Directly update corrupt entropy logs
-            self._logs['corrupt_entropy'].extend(corrupt_entropy_logs)
             aggregated_metrics['entropy'].update({
+                'corrupt_entropy_logs': corrupt_entropy_logs,
                 'corrupt_entropy_mean': sum(s['mean'] for s in corrupt_entropy_stats) / len(corrupt_entropy_stats),
                 'corrupt_entropy_max': max(s['max'] for s in corrupt_entropy_stats),
                 'corrupt_entropy_min': min(s['min'] for s in corrupt_entropy_stats)
@@ -1714,6 +1723,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # PAPO: Aggregate KL_prcp
         if kl_prcp_values:
             aggregated_metrics['kl_prcp'] = sum(kl_prcp_values) / len(kl_prcp_values)
+        if kl_prcp_logs:
+            aggregated_metrics['kl_prcp_logs'] = kl_prcp_logs
         # VPPO: Aggregate perception_threshold
         if perception_threshold_values:
             aggregated_metrics['perception_threshold'] = sum(perception_threshold_values) / len(perception_threshold_values)
@@ -2391,9 +2402,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         self.compute_entropy = self.args.log_entropy or self.top_entropy_quantile < 1.0 or self.entropy_loss_coef != 0.0
         if self.args.log_entropy:
             self._logs.update({'entropy': deque(maxlen=args.generation_batch_size)})
-        # PAPO
+        # PAPO/VPPO/ToR
         if self.corrupt_entropy_loss_coef != 0.0:
             self._logs.update({'corrupt_entropy': deque(maxlen=args.generation_batch_size)})
+        self.compute_kl_prcp = self.kl_prcp_coef != 0.0 or self.top_perception_quantile < 1.0 or self.vppo_use_advantage_shaping
+        if self.compute_kl_prcp:
+            self._logs.update({'kl_prcp': deque(maxlen=args.generation_batch_size)})
 
     def _collect_config_info(self) -> Dict[str, str]:
         config = {

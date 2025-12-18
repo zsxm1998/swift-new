@@ -1,0 +1,25 @@
+#!/bin/bash
+set -x
+
+# 获取模型大小参数，默认为7B
+MODEL_SIZE="${1:-7}"
+
+# 清理参数：去除可能的b/B后缀，只保留数字
+MODEL_SIZE_NUM=$(echo "$MODEL_SIZE" | tr '[:lower:]' '[:upper:]' | sed 's/[^0-9]//g')
+
+# 检查是否为有效数字
+if ! [[ "$MODEL_SIZE_NUM" =~ ^[0-9]+$ ]]; then
+    echo "错误：参数必须是数字（如7、3等）或带b/B后缀的数字（如7b、3B等）"
+    exit 1
+fi
+
+#1003520 = 1280*28*28; 200704 = 256*28*28
+CUDA_VISIBLE_DEVICES=4,5,6,7 \
+NPROC_PER_NODE=4 \
+MASTER_PORT=$((RANDOM%10000+20000)) \
+WANDB_PROJECT="VPPO-Reproduce" \
+MAX_PIXELS=1003520 \
+MIN_PIXELS=200704 \
+swift rlhf --config projects/baselines/VPPO/configs/VPPO_DAPO_ViRL39K.yaml \
+    --model "Qwen/Qwen2.5-VL-${MODEL_SIZE_NUM}B-Instruct" \
+    --output_dir "outputs/baselines/VPPO/1_VPPO_DAPO_ViRL39K_Qwen25VL-${MODEL_SIZE_NUM}B"

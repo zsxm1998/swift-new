@@ -40,7 +40,7 @@ rlhf_type: grpo
 loss_type: dapo
 num_generations: 5
 steps_per_generation: 60
-beta: 0.01
+beta: 0
 epsilon_high: 0.28
 dynamic_sample: true
 max_resample_times: 3

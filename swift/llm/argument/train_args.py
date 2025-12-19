@@ -99,6 +99,8 @@ class SwanlabArguments:
             SwanLab's `swanlab_notification_method`.
         swanlab_secret (Optional[str]): Defaults to None. The secret corresponding to
             SwanLab's `swanlab_notification_method`.
+        swanlab_bark_url (Optional[str]): The Bark Server URL for SwanLab notifications. Defaults to `None`.
+        swanlab_bark_key (Optional[str]): The Bark Device Token for SwanLab notifications. Defaults to `None`.
         swanlab_mode (Literal['cloud', 'local']): The operation mode, either 'cloud' for cloud-based logging or 'local'
             for local-only logging.
     """
@@ -109,6 +111,8 @@ class SwanlabArguments:
     swanlab_notification_method: Optional[str] = None
     swanlab_webhook_url: Optional[str] = None
     swanlab_secret: Optional[str] = None
+    swanlab_bark_url: Optional[str] = None
+    swanlab_bark_key: Optional[str] = None
     swanlab_mode: Literal['cloud', 'local'] = 'cloud'
 
     def _init_swanlab(self):
@@ -143,6 +147,14 @@ class SwanlabArguments:
                 secret=self.swanlab_secret,
             )
             swanlab.register_callbacks([callback])
+
+        if self.swanlab_bark_url is not None:
+            from swanlab.plugin.notification import BarkCallback
+            bark_callback = BarkCallback(
+                key=self.swanlab_bark_key,
+                url=self.swanlab_bark_url,
+            )
+            swanlab.register_callbacks([bark_callback])
 
         INTEGRATION_TO_CALLBACK['swanlab'] = SwanLabCallback(
             project=self.swanlab_project,

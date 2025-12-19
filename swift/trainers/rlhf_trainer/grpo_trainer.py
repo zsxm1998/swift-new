@@ -1092,6 +1092,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         per_token_logps, entropies = self._get_per_token_logps_and_entropies(
             model, inputs, compute_entropy=self.compute_entropy)
 
+        metrics_data = {}
         entropy_mask = None
         entropy_metrics = {}
         vppo_tas_metrics = {} # VPPO TAS metrics to log
@@ -1358,12 +1359,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 return (x * completion_mask).sum() / completion_token_count
 
         # Prepare metrics data
-        metrics_data = {
+        metrics_data.update({
             'mode': mode,
             'entropy': entropy_metrics,
             'completion_mask': completion_mask,
             'completion_token_count': completion_token_count,
-        }
+        })
 
         if per_token_kl is not None:
             mean_kl = masked_batch_mean(per_token_kl)
@@ -1377,7 +1378,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, torch.nan)
             per_completion_kl_prcp_mean = torch.nanmean(per_token_kl_prcp_nan, dim=1)
             global_per_completion_kl_prcp_mean = gather(per_completion_kl_prcp_mean)
-            metrics_data['kl_prcp_logs'] = global_per_completion_kl_prcp_mean.tolist(),
+            metrics_data['kl_prcp_logs'] = global_per_completion_kl_prcp_mean.tolist()
             
         # VPPO: add TAS metrics
         if vppo_tas_metrics:

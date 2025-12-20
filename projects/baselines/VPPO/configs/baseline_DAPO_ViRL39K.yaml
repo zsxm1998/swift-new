@@ -22,9 +22,9 @@ train_type: full
 deepspeed: zero3
 gradient_checkpointing: true
 num_train_epochs: 2
-per_device_train_batch_size: 1
-per_device_eval_batch_size: 4
-gradient_accumulation_steps: 256
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 8
+gradient_accumulation_steps: 32
 learning_rate: 1e-6
 weight_decay: 0.01
 warmup_ratio: 0.0
@@ -43,7 +43,7 @@ swanlab_project: VPPO-Reproduce
 rlhf_type: grpo
 loss_type: dapo
 num_generations: 8
-steps_per_generation: 768
+steps_per_generation: 96
 beta: 0
 epsilon_high: 0.28
 dynamic_sample: true
@@ -57,7 +57,7 @@ log_entropy: true
 # rollout args
 use_vllm: true
 vllm_mode: colocate
-vllm_gpu_memory_utilization: 0.38
+vllm_gpu_memory_utilization: 0.4
 vllm_tensor_parallel_size: 2
 vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置
 vllm_engine_kwargs:

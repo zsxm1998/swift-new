@@ -885,17 +885,30 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         with self._template_context(template):
                             no_image_batch = [template.encode(data) for data in no_image_batch]
                             no_image_batch = to_device(template.data_collator(no_image_batch), self.model.device)
-                            ni_labels = no_image_batch.pop('labels')
+                            
+                        ni_labels = no_image_batch.pop('labels')
+                        ni_extra_kwargs = {'truncated_mask': extra_kwargs['truncated_mask']}
+                        ni_extra_kwargs['logits_to_keep'] = \
+                            (ni_labels.shape[-1] - (torch.ne(ni_labels, -100).int().argmax(-1))).max().item()
+                        assert not self.template.padding_free, 'padding_free for "no_image" corruption is not supported yet.'
+                        ni_extra_kwargs['completion_mask'] = ni_labels[:, -ni_extra_kwargs['logits_to_keep']:] != -100
+                        no_image_batch.update(ni_extra_kwargs)
+                        ni_logps = self._get_per_token_logps_and_entropies(self.model, no_image_batch)[0]
 
-                            ni_extra_kwargs = {'truncated_mask': extra_kwargs['truncated_mask']}
-                            ni_extra_kwargs['logits_to_keep'] = \
-                                (ni_labels.shape[-1] - (torch.ne(ni_labels, -100).int().argmax(-1))).max().item()
-                            assert not self.template.padding_free, 'padding_free for "no_image" corruption is not supported yet.'
-                            ni_extra_kwargs['completion_mask'] = ni_labels[:, -ni_extra_kwargs['logits_to_keep']:] != -100
-                            no_image_batch.update(ni_extra_kwargs)
+                        ostart = torch.ne(labels, -100).int().argmax(1)
+                        oearliest = ostart.min()
+                        oend = labels.shape[1] - torch.ne(labels.flip(1), -100).int().argmax(1)
+                        ostart, oend = ostart-oearliest, oend-oearliest
+                        nstart = torch.ne(ni_labels, -100).int().argmax(1)
+                        neareliest = nstart.min()
+                        nend = ni_labels.shape[1] - torch.ne(ni_labels.flip(1), -100).int().argmax(1)
+                        nstart, nend = nstart-neareliest, nend-neareliest
 
-                            batch_encoded_inputs['corrupted_old_per_token_logps'] = \
-                                self._get_per_token_logps_and_entropies(self.model, no_image_batch)[0]
+                        cor_logps = batch_encoded_inputs['old_per_token_logps'].clone()
+                        for i in range(batch_size):
+                            cor_logps[i, ostart[i]:oend[i]] = ni_logps[i, nstart[i]:nend[i]]
+                        batch_encoded_inputs['corrupted_old_per_token_logps'] = cor_logps
+                    
                     else:
                         batch_encoded_inputs['pixel_values'], batch_encoded_inputs['corrupted_images'] = (
                             batch_encoded_inputs['corrupted_images'], batch_encoded_inputs['pixel_values'])
@@ -1014,7 +1027,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # Warning: This implementation is not equal to the original VPPO paper, which computes on local mini batch level.
         # But we computes on the local generation batch level.
         if self.vppo_use_advantage_shaping:
-            assert not template.padding_free, '"padding_free" is not supported for VPPO advantage shaping yet.'
             with torch.no_grad():
                 ga_batch_sensitivity_scores = []
                 for batch_encoded in ga_batch_encoded_inputs:
@@ -1115,8 +1127,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 if self.entropy_thr_granularity == 'batch':
                     entropy_threshold = torch.nanquantile(entropies_nan.flatten().float(), 1 - self.top_entropy_quantile)
                     entropy_metrics['entropy_threshold'] = self.accelerator.reduce(entropy_threshold, reduction='mean').item()
-                elif self.entropy_thr_granularity == 'completion': # 这里应该不支持padding_free，需要改进
-                    assert not self.template.padding_free, '"padding_free" for "entropy_thr_granularity=completion" is not supported yet.'
+                elif self.entropy_thr_granularity == 'completion':
                     entropy_threshold = torch.nanquantile(entropies_nan.float(), 1-self.top_entropy_quantile, 1, keepdim=True)
                     global_entropy_threshold = gather(entropy_threshold.squeeze(1))
                     entropy_metrics['entropy_threshold'] = global_entropy_threshold.nanmean().item()
@@ -1173,8 +1184,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             if self.perception_thr_granularity == 'batch':
                 perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.flatten().float(), 1 - self.top_perception_quantile)
                 metrics_data['perception_threshold'] = self.accelerator.reduce(perception_threshold, reduction='mean').item()
-            elif self.perception_thr_granularity == 'completion': # 这里应该不支持padding_free，需要改进
-                assert not self.template.padding_free, '"padding_free" for "perception_thr_granularity=completion" is not supported yet.'
+            elif self.perception_thr_granularity == 'completion':
                 perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.float(), 1-self.top_perception_quantile, 1, keepdim=True)
                 global_perception_threshold = self.accelerator.gather_for_metrics(perception_threshold.squeeze(1))
                 metrics_data['perception_threshold'] = global_perception_threshold.nanmean().item()

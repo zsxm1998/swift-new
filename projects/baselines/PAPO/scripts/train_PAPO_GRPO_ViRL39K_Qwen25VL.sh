@@ -13,9 +13,19 @@ if ! [[ "$MODEL_SIZE_NUM" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
+# 从环境变量提取Bark相关参数
+EXTRA_ARGS=()
+if [[ -n "$BARK_URL" ]]; then
+    EXTRA_ARGS+=(--swanlab_bark_url "$BARK_URL")
+fi
+if [[ -n "$BARK_DEVICE_TOKEN" ]]; then
+    EXTRA_ARGS+=(--swanlab_bark_key "$BARK_DEVICE_TOKEN")
+fi
+
 #1003520 = 1280*28*28; 200704 = 256*28*28
 WANDB_PROJECT="PAPO-Reproduce" \
 MAX_PIXELS=1003520 \
 MIN_PIXELS=200704 \
 NPROC_PER_NODE=8 \
-swift rlhf --config projects/baselines/PAPO/configs/PAPO_GRPO_ViRL39K_Qwen25-VL-${MODEL_SIZE_NUM}B.yaml
+swift rlhf --config projects/baselines/PAPO/configs/PAPO_GRPO_ViRL39K_Qwen25-VL-${MODEL_SIZE_NUM}B.yaml \
+    "${EXTRA_ARGS[@]}"

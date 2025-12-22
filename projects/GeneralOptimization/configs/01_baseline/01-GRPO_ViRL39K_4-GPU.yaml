@@ -1,0 +1,63 @@
+# model args
+torch_dtype: bfloat16
+attn_impl: flash_attn
+freeze_vit: true
+freeze_aligner: true
+
+# data args
+dataset: 'hf::PAPOGalaxy/PAPO_ViRL39K_train'
+val_dataset: 'hf::PAPOGalaxy/PAPO_MMK12_test'
+dataset_num_proc: 16
+load_from_cache_file: true
+dataloader_num_workers: 4
+max_length: 4096 # 在GRPO时代表max_prompt_length
+
+# log, val and save args
+logging_steps: 1
+save_strategy: steps
+save_steps: 150
+save_total_limit: 2
+save_only_model: false
+report_to: swanlab
+swanlab_project: GeneralOptim-ViRL39K
+
+# train args
+train_type: full
+deepspeed: zero3
+gradient_checkpointing: true
+learning_rate: 1e-6
+weight_decay: 0.01
+warmup_ratio: 0.0
+num_train_epochs: 2
+max_steps: 600
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 10
+gradient_accumulation_steps: 20
+
+# rlhf args
+steps_per_generation: 60
+num_generations: 5
+rlhf_type: grpo
+loss_type: grpo
+beta: 0.04
+epsilon_high: 0.2
+num_iterations: 1
+reward_funcs: [papo_format, papo_accuracy]
+reward_weights: ['0.5', '0.5'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+external_plugins: [projects/baselines/PAPO/reward_function.py]
+log_completions: true
+log_entropy: true
+
+# rollout args
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.5
+vllm_max_model_len: 32768
+vllm_tensor_parallel_size: 1
+vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置
+vllm_engine_kwargs:
+  max_num_batched_tokens: 4096
+sleep_level: 1
+max_completion_length: 4096
+temperature: 1.0
+top_p: 0.99

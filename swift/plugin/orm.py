@@ -290,7 +290,7 @@ class Format(ORM):
 
     def __call__(self, completions, **kwargs) -> List[float]:
         """Reward function that checks if the completion has a specific format."""
-        pattern = r'^<think>.*?</think>\s*<answer>.*?</answer>(?![\s\S])'
+        pattern = r'^<think>.*?</think>.*?<answer>.*?</answer>(?![\s\S])'
         matches = [re.match(pattern, content, re.DOTALL | re.MULTILINE) for content in completions]
         return [1.0 if match else 0.0 for match in matches]
 

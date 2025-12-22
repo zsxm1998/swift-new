@@ -875,7 +875,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
                 # For PAPO, VPPO, ToR
                 if self.corrupt_image:
-                    if self.corrupt_image == 'no_image': # ZSXM TODO 这里还是有bug，去掉图片后logp和原来不等长，需要改进
+                    if self.corrupt_image == 'no_image':
                         no_image_batch = deepcopy(batch)
                         for data in no_image_batch:
                             data.pop('images', None)

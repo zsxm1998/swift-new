@@ -1222,7 +1222,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
                 # Log metrics of TAS
                 vppo_tas_metrics['dynamic_tas_beta_max'] = \
-                    self.accelerator.gather_for_metrics(tas_beta_max).nanmean().item()
+                    self.accelerator.gather_for_metrics(tas_beta_max).nanmedian().item() # 这里用中位数而不用均值是为了排除mu_norm=0的极端值的影响
                 vppo_tas_metrics['sensitivity_score'] = \
                     self.accelerator.gather_for_metrics(sensitivity_scores[valid_scores_mask]).nanmean().item()
                 vppo_tas_metrics['global_sensitivity_score_min'] = \

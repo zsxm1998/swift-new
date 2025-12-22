@@ -1045,10 +1045,10 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 
                 ga_batch_sensitivity_scores = torch.cat(ga_batch_sensitivity_scores, dim=0) # 这里后续可以选择gather全局数值
                 if ga_batch_sensitivity_scores.numel() > 1:
-                    # global_min_score = torch.quantile(ga_batch_sensitivity_scores, 0.0) # 使用0%分位数作为下限
-                    # global_max_score = torch.quantile(ga_batch_sensitivity_scores, 1.0) # 使用100%分位数作为上限
-                    global_min_score = ga_batch_sensitivity_scores.min()
-                    global_max_score = ga_batch_sensitivity_scores.max()
+                    global_min_score = torch.quantile(ga_batch_sensitivity_scores, 0.1) # 使用分位数作为下限
+                    global_max_score = torch.quantile(ga_batch_sensitivity_scores, 0.9) # 使用分位数作为上限
+                    # global_min_score = ga_batch_sensitivity_scores.min() # 经测试太过极端，会导致很大的dynamic_beta_max
+                    # global_max_score = ga_batch_sensitivity_scores.max() # 经测试太过极端，会导致很大的dynamic_beta_max
                     for batch_encoded in ga_batch_encoded_inputs:
                         batch_encoded['vppo_global_min_score'] = global_min_score
                         batch_encoded['vppo_global_max_score'] = global_max_score
@@ -1202,6 +1202,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 
                 global_min_score = inputs.get('vppo_global_min_score', torch.tensor(0.0, device=sensitivity_scores.device))
                 global_max_score = inputs.get('vppo_global_max_score', torch.tensor(0.0, device=sensitivity_scores.device))
+                tas_beta_max = torch.tensor(torch.nan, device=sensitivity_scores.device)
                 if (global_max_score - global_min_score) > 1e-6:
                     valid_scores = sensitivity_scores[valid_scores_mask]
 
@@ -1213,7 +1214,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     tas_beta_min = self.vppo_advantage_scaling_min
                     mu_norm = normalized_scores.mean()
                     tas_beta_max = tas_beta_min + (1.0 - tas_beta_min) / (mu_norm + 1e-8) # Dynamically calculate beta_max
-                    vppo_tas_metrics['dynamic_tas_beta_max'] = self.accelerator.gather_for_metrics(tas_beta_max).nanmean().item()
 
                     # Map normalized scores to the DYNAMIC range [tas_beta_min, tas_beta_max].
                     tas_range = tas_beta_max - tas_beta_min
@@ -1221,6 +1221,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     scaling_factors[valid_scores_mask] = mapped_scores
 
                 # Log metrics of TAS
+                vppo_tas_metrics['dynamic_tas_beta_max'] = \
+                    self.accelerator.gather_for_metrics(tas_beta_max).nanmean().item()
                 vppo_tas_metrics['sensitivity_score'] = \
                     self.accelerator.gather_for_metrics(sensitivity_scores[valid_scores_mask]).nanmean().item()
                 vppo_tas_metrics['global_sensitivity_score_min'] = \

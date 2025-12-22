@@ -1,0 +1,80 @@
+# ToR args
+corrupt_image: random_patch
+corrupt_image_kwargs:
+  black_prob: 0.6
+corrupt_image_position: prompt
+tor_use_token_weighting: true
+tor_rsn_weight: 1.0
+top_entropy_quantile: 0.3
+entropy_thr_granularity: batch
+tor_prcp_weight: 0.5
+top_perception_quantile: 0.3
+perception_thr_granularity: batch
+kl_prcp_reference: old
+
+# model args
+torch_dtype: bfloat16
+attn_impl: flash_attn
+freeze_vit: true
+freeze_aligner: true
+
+# data args
+dataset: 'hf::hiyouga/geometry3k:train'
+val_dataset: 'hf::hiyouga/geometry3k:validation'
+dataset_num_proc: 16
+load_from_cache_file: false
+dataloader_num_workers: 4
+max_length: 4096 # 在GRPO时代表max_prompt_length
+system: 'examples/train/grpo/prompt.txt'
+
+# log, val and save args
+logging_steps: 1
+save_strategy: steps
+save_steps: 20
+save_total_limit: 2
+save_only_model: false
+report_to: swanlab
+swanlab_project: GeneralOptim-Geometry3k
+
+# train args
+train_type: full
+deepspeed: zero3
+gradient_checkpointing: true
+learning_rate: 1e-6
+weight_decay: 0.01
+warmup_ratio: 0.0
+num_train_epochs: 4
+max_steps: 60
+per_device_train_batch_size: 8
+per_device_eval_batch_size: 12
+gradient_accumulation_steps: 32
+
+# rlhf args
+steps_per_generation: 128
+num_generations: 8
+rlhf_type: grpo
+loss_type: dapo
+beta: 0
+epsilon_high: 0.28
+dynamic_sample: true
+max_resample_times: 3
+overlong_filter: false
+num_iterations: 1
+reward_funcs: [format, accuracy]
+reward_weights: ['0.5', '0.5'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+log_completions: true
+log_entropy: true
+
+# rollout args
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.5
+vllm_max_model_len: 32768
+vllm_tensor_parallel_size: 1
+vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置
+vllm_engine_kwargs:
+  max_num_batched_tokens: 4096
+sleep_level: 1
+max_completion_length: 4096
+temperature: 1.0
+top_p: 0.99

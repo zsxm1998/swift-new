@@ -1229,6 +1229,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     self.accelerator.gather_for_metrics(global_min_score).nanmean().item()
                 vppo_tas_metrics['global_sensitivity_score_max'] = \
                     self.accelerator.gather_for_metrics(global_max_score).nanmean().item()
+                global_scaling_factors = self.accelerator.gather_for_metrics(scaling_factors[valid_scores_mask])
+                vppo_tas_metrics['scaling_factor_mean'] = global_scaling_factors.nanmean().item()
+                vppo_tas_metrics['scaling_factor_max'] = nanmax(global_scaling_factors).item()
 
             # Apply the final scaling factor to the advantages.
             advantages = advantages * scaling_factors
@@ -1474,10 +1477,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             self._metrics[mode]['VPPO_TAS/sensitivity_score'].append(vppo_tas_metrics['sensitivity_score'])
             self._metrics[mode]['VPPO_TAS/global_sensitivity_score_max'].append(vppo_tas_metrics['global_sensitivity_score_max'])
             self._metrics[mode]['VPPO_TAS/global_sensitivity_score_min'].append(vppo_tas_metrics['global_sensitivity_score_min'])
-            if 'dynamic_tas_beta_max' in vppo_tas_metrics:
-                self._metrics[mode]['VPPO_TAS/dynamic_beta_max'].append(vppo_tas_metrics['dynamic_tas_beta_max'])
-            else:
-                self._metrics[mode]['VPPO_TAS/dynamic_beta_max'].append(0)
+            self._metrics[mode]['VPPO_TAS/dynamic_beta_max'].append(vppo_tas_metrics['dynamic_tas_beta_max'])
+            self._metrics[mode]['VPPO_TAS/scaling_factor/mean'].append(vppo_tas_metrics['scaling_factor_mean'])
+            self._metrics[mode]['VPPO_TAS/scaling_factor/max'].append(vppo_tas_metrics['scaling_factor_max'])
 
         # Update vLLM correction metrics
         if 'rollout_correction' in metrics_data:
@@ -1599,13 +1601,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 perception_threshold_values.append(chunk_metrics['perception_threshold'])
             # VPPO: Collect TAS metrics
             if 'vppo_advantage_shaping' in chunk_metrics:
-                vppo_tas_metrics = chunk_metrics['vppo_advantage_shaping']
-                tas_stats.append({
-                    'sensitivity_score': vppo_tas_metrics['sensitivity_score'],
-                    'global_sensitivity_score_max': vppo_tas_metrics['global_sensitivity_score_max'],
-                    'global_sensitivity_score_min': vppo_tas_metrics['global_sensitivity_score_min'],
-                    'dynamic_tas_beta_max': vppo_tas_metrics.get('dynamic_tas_beta_max', 0)
-                })
+                tas_stats.append(chunk_metrics['vppo_advantage_shaping'])
 
             # Collect clipping metrics (weighted by tokens)
             if 'clipping' in chunk_metrics:
@@ -1659,7 +1655,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 'sensitivity_score': sum(s['sensitivity_score'] for s in tas_stats) / len(tas_stats),
                 'global_sensitivity_score_max': sum(s['global_sensitivity_score_max'] for s in tas_stats) / len(tas_stats),
                 'global_sensitivity_score_min': sum(s['global_sensitivity_score_min'] for s in tas_stats) / len(tas_stats),
-                'dynamic_tas_beta_max': sum(s['dynamic_tas_beta_max'] for s in tas_stats) / len(tas_stats)
+                'dynamic_tas_beta_max': sum(s['dynamic_tas_beta_max'] for s in tas_stats) / len(tas_stats),
+                'scaling_factor_mean': sum(s['scaling_factor_mean'] for s in tas_stats) / len(tas_stats),
+                'scaling_factor_max': sum(s['scaling_factor_max'] for s in tas_stats) / len(tas_stats),
             }
 
         # Aggregate clipping (token-weighted averages)

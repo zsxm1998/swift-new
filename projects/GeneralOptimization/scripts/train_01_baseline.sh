@@ -9,9 +9,10 @@ set -x
 #            -g 0,1,2,3
 #
 # 参数：
-#   -c, --config   配置文件路径（必须）
-#   -m, --model    HF模型名（必须），如 Qwen/Qwen3-VL-4B-Instruct
-#   -g, --gpu      GPU index（必须），如 0 或 0,1,2,3
+#   -c, --config                 配置文件路径（必须）
+#   -m, --model                  HF模型名（必须），如 Qwen/Qwen3-VL-4B-Instruct
+#   -g, --gpu                    GPU index（必须），如 0 或 0,1,2,3
+#   -r, --resume_from_checkpoint 从 checkpoint 恢复（可选）
 ############################################
 
 # -------------------------
@@ -20,9 +21,10 @@ set -x
 CONFIG_PATH=""
 MODEL_ID=""
 GPU_LIST=""
+RESUME_FROM_CHECKPOINT=""
 
 print_usage() {
-  echo "Usage: $0 -c|--config <yaml_path> -m|--model <hf_model_id> -g|--gpu <gpu_indices>"
+  echo "Usage: $0 -c|--config <yaml_path> -m|--model <hf_model_id> -g|--gpu <gpu_indices> [-r|--resume_from_checkpoint <ckpt_path>]"
   exit 1
 }
 
@@ -42,6 +44,11 @@ while [[ $# -gt 0 ]]; do
     -g|--gpu)
       [[ $# -ge 2 ]] || print_usage
       GPU_LIST="$2"
+      shift 2
+      ;;
+    -r|--resume_from_checkpoint)
+      [[ $# -ge 2 ]] || print_usage
+      RESUME_FROM_CHECKPOINT="$2"
       shift 2
       ;;
     -h|--help)
@@ -136,16 +143,33 @@ if [[ -n "${BARK_DEVICE_TOKEN:-}" ]]; then
 fi
 
 # -------------------------
-# 7) 打印最终信息
+# 7) 可选：resume_from_checkpoint
+#   - 当传入 -r/--resume_from_checkpoint 时：
+#     检查 SWANLAB_RESUME 和 SWANLAB_RUN_ID 是否都已设置，否则报错退出
+#     然后将 --resume_from_checkpoint 追加进 EXTRA_ARGS
+# -------------------------
+if [[ -n "${RESUME_FROM_CHECKPOINT}" ]]; then
+  if [[ -z "${SWANLAB_RESUME:-}" || -z "${SWANLAB_RUN_ID:-}" ]]; then
+    echo "错误：传入 --resume_from_checkpoint 时，必须同时设置环境变量 SWANLAB_RESUME 和 SWANLAB_RUN_ID。"
+    echo "  当前 SWANLAB_RESUME='${SWANLAB_RESUME:-}'"
+    echo "  当前 SWANLAB_RUN_ID='${SWANLAB_RUN_ID:-}'"
+    exit 6
+  fi
+  EXTRA_ARGS+=(--resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}")
+fi
+
+# -------------------------
+# 8) 打印最终信息
 # -------------------------
 echo "CONFIG_PATH=${CONFIG_PATH}"
 echo "MODEL_ID=${MODEL_ID}"
 echo "GPU_LIST=${GPU_LIST} (count=${GPU_COUNT}, expected=${N_FROM_CONFIG})"
 echo "OUTPUT_DIR=${OUTPUT_DIR}"
+echo "RESUME_FROM_CHECKPOINT=${RESUME_FROM_CHECKPOINT}"
 echo "EXTRA_ARGS=${EXTRA_ARGS[*]}"
 
 # -------------------------
-# 8) 执行 swift rlhf（将 --config/--model/output_dir 自动化）
+# 9) 执行 swift rlhf（将 --config/--model/output_dir 自动化）
 # 1003520 = 1280*28*28; 200704 = 256*28*28
 # MAX_PIXELS是Qwen2-VL的，IMAGE_MAX_TOKEN_NUM是Qwen3-VL的
 # -------------------------

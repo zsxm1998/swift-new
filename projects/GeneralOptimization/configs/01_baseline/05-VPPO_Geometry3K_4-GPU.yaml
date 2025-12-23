@@ -66,7 +66,7 @@ log_entropy: true
 # rollout args
 use_vllm: true
 vllm_mode: colocate
-vllm_gpu_memory_utilization: 0.5
+vllm_gpu_memory_utilization: 0.45
 vllm_max_model_len: 32768
 vllm_tensor_parallel_size: 1
 vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置

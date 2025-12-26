@@ -1134,6 +1134,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 else:
                     raise ValueError(f'Got invalid entropy_thr_granularity: {self.entropy_thr_granularity}, should be "batch" or "completion"')
                 entropy_mask = entropies_nan >= entropy_threshold
+                local_fraction = entropy_mask.sum() / completion_mask.sum().clamp(min=1.0)
+                entropy_metrics['top_entropy_token_fraction'] = self.accelerator.reduce(local_fraction, reduction='mean').item()
 
         # apply the completion_mask to exclude loss and metrics for overlong completions
         if self.overlong_filter and any(truncated_mask):
@@ -1191,6 +1193,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             else:
                 raise ValueError(f'Got invalid perception_thr_granularity: {self.perception_thr_granularity}, should be "batch" or "completion"')
             perception_mask = per_token_kl_prcp_nan >= perception_threshold
+            local_fraction = perception_mask.sum() / completion_mask.sum().clamp(min=1.0)
+            metrics_data['top_perception_token_fraction'] = self.accelerator.reduce(local_fraction, reduction='mean').item()
 
         # VPPO: Compute and apply the advantage scaling factor
         if self.vppo_use_advantage_shaping:
@@ -1451,6 +1455,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 self._metrics[mode]['entropy/min'].append(entropy_metrics['entropy_min'])
             if 'entropy_threshold' in entropy_metrics:
                 self._metrics[mode]['entropy/threshold'].append(entropy_metrics['entropy_threshold'])
+                self._metrics[mode]['entropy/top_token_fraction'].append(entropy_metrics['top_entropy_token_fraction'])
             if 'corrupt_entropy_logs' in entropy_metrics:
                 self._logs['corrupt_entropy'].extend(entropy_metrics['corrupt_entropy_logs'])
                 self._metrics[mode]['corrupt_entropy/mean'].append(entropy_metrics['corrupt_entropy_mean'])
@@ -1470,6 +1475,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # VPPO: Update perception_threshold metric
         if 'perception_threshold' in metrics_data:
             self._metrics[mode]['perception_threshold'].append(metrics_data['perception_threshold'])
+            self._metrics[mode]['perception_top_token_fraction'].append(metrics_data['top_perception_token_fraction'])
 
         # VPPO: Update TAS metrics
         if 'vppo_advantage_shaping' in metrics_data:
@@ -1559,11 +1565,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # Separate metrics by type for aggregation
         entropy_logs, entropy_stats, kl_values = [], [], []
         corrupt_entropy_logs, corrupt_entropy_stats, kl_prcp_values = [], [], []  # PAPO
-        perception_threshold_values, tas_stats = [], []  # VPPO
+        perception_thresholds, tas_stats = [], []  # VPPO/ToR
+        top_perception_token_fractions = [] # VPPO/ToR
         kl_prcp_logs = [] # PAPO/VPPO/ToR
         clip_values = {'low': [], 'high': [], 'region': [], 'low_min': [], 'high_max': []}
         cispo_clip_values = []
-        entropy_thresholds = []
+        entropy_thresholds, top_entropy_token_fractions = [], []
 
         for chunk_metrics, chunk_weight in all_metrics_data:
             chunk_tokens = chunk_metrics['completion_token_count']
@@ -1580,6 +1587,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     })
                 if 'entropy_threshold' in entropy_metrics:
                     entropy_thresholds.append(entropy_metrics['entropy_threshold'])
+                    top_entropy_token_fractions.append(entropy_metrics['top_entropy_token_fraction'])
                 if 'corrupt_entropy_logs' in entropy_metrics: # PAPO
                     corrupt_entropy_logs.extend(entropy_metrics['corrupt_entropy_logs'])
                     corrupt_entropy_stats.append({
@@ -1598,7 +1606,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 kl_prcp_logs.extend(chunk_metrics['kl_prcp_logs'])
             # VPPO: Collect perception threshold metrics
             if 'perception_threshold' in chunk_metrics:
-                perception_threshold_values.append(chunk_metrics['perception_threshold'])
+                perception_thresholds.append(chunk_metrics['perception_threshold'])
+                top_perception_token_fractions.append(chunk_metrics['top_perception_token_fraction'])
             # VPPO: Collect TAS metrics
             if 'vppo_advantage_shaping' in chunk_metrics:
                 tas_stats.append(chunk_metrics['vppo_advantage_shaping'])
@@ -1630,6 +1639,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             }
         if entropy_thresholds:
             aggregated_metrics['entropy']['entropy_threshold'] = sum(entropy_thresholds) / len(entropy_thresholds)
+            aggregated_metrics['entropy']['top_entropy_token_fraction'] = sum(top_entropy_token_fractions) / len(top_entropy_token_fractions)
         if corrupt_entropy_logs:  # PAPO
             aggregated_metrics['entropy'].update({
                 'corrupt_entropy_logs': corrupt_entropy_logs,
@@ -1647,8 +1657,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if kl_prcp_logs:
             aggregated_metrics['kl_prcp_logs'] = kl_prcp_logs
         # VPPO: Aggregate perception_threshold
-        if perception_threshold_values:
-            aggregated_metrics['perception_threshold'] = sum(perception_threshold_values) / len(perception_threshold_values)
+        if perception_thresholds:
+            aggregated_metrics['perception_threshold'] = sum(perception_thresholds) / len(perception_thresholds)
+            aggregated_metrics['top_perception_token_fraction'] = sum(top_perception_token_fractions) / len(top_perception_token_fractions)
         # VPPO: Aggregate TAS metrics
         if tas_stats:
             aggregated_metrics['vppo_advantage_shaping'] = {

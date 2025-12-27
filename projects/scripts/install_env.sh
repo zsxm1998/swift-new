@@ -110,3 +110,10 @@ bash projects/scripts/env_test_grpo_vllm.sh # Qwen2.5-VL-7B-Instruct Y Qwen3-VL-
 # 另一个尝试export VLLM_USE_V1=0 ，参考https://github.com/modelscope/ms-swift/issues/6617 【试了也不奏效】
 # 重装了vllm0.12.0，这个版本有修复这个bug，解决了问题。
 # 或者设置VLLM_ATTENTION_BACKEND=FLASHINFER（Qwen2.5-VL、Qwen3-VL都不支持这个后端，不可行）
+
+# VLLM报错torch._dynamo.exc.Unsupported: non-function or method super: <built-in function _disabled_torch_function_impl>，则设置
+engine_kwargs = {
+    'compilation_config': {"mode": "none"}
+}
+或设置
+vllm_enforce_eager=True

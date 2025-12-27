@@ -95,6 +95,33 @@ class InferRequest:
     def to_printable(self):
         return InferRequest._to_printable(asdict(self))
 
+    @classmethod
+    def from_dict(cls, inputs: Dict[str, Any]) -> 'InferRequest':
+        messages = inputs['messages']
+        tools = inputs.get('tools')
+        objects = inputs.get('objects') or {}
+
+        for message in messages:
+            if message['role'] == 'tool_response':
+                message['role'] = 'tool'
+            if message['role'] in {'tool_call', 'tool'} and not isinstance(message['content'], str):
+                message['content'] = json.dumps(message['content'], ensure_ascii=False)
+
+        media_kwargs = StdTemplateInputs.remove_messages_media(messages)
+        for k in list(media_kwargs.keys()):
+            mm_data = media_kwargs[k]
+
+            inputs_mm_data = inputs.get(k)
+            if isinstance(inputs_mm_data, str):
+                inputs_mm_data = [inputs_mm_data]
+            inputs_mm_data = (inputs_mm_data or []).copy()
+            if mm_data:
+                assert not inputs_mm_data, f'self.{k}: {inputs_mm_data}'
+            else:
+                media_kwargs[k] = inputs_mm_data
+
+        return cls(messages=messages, tools=tools, objects=objects, **media_kwargs)
+
 
 @dataclass
 class RolloutInferRequest(InferRequest):

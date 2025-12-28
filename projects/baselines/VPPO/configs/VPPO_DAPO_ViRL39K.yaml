@@ -2,6 +2,7 @@
 
 # VPPO args
 entropy_loss_coef: 0.06
+entropy_loss_type: sampled
 corrupt_image: random_patch
 corrupt_image_kwargs:
   black_prob: 0.5
@@ -68,9 +69,11 @@ use_vllm: true
 vllm_mode: colocate
 vllm_gpu_memory_utilization: 0.4
 vllm_tensor_parallel_size: 2
-vllm_enforce_eager: true # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置
+vllm_enforce_eager: false # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置。不用设置，改成配置compilation_config了
 vllm_engine_kwargs:
   max_num_batched_tokens: 4096
+  compilation_config:
+    mode: "none"
 sleep_level: 1
 max_completion_length: 2048
 temperature: 1.0

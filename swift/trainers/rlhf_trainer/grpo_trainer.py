@@ -1127,13 +1127,34 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 if self.entropy_thr_granularity == 'batch':
                     entropy_threshold = torch.nanquantile(entropies_nan.flatten().float(), 1 - self.top_entropy_quantile)
                     entropy_metrics['entropy_threshold'] = self.accelerator.reduce(entropy_threshold, reduction='mean').item()
+                    entropy_mask = entropies_nan >= entropy_threshold
                 elif self.entropy_thr_granularity == 'completion':
-                    entropy_threshold = torch.nanquantile(entropies_nan.float(), 1-self.top_entropy_quantile, 1, keepdim=True)
-                    global_entropy_threshold = gather(entropy_threshold.squeeze(1))
-                    entropy_metrics['entropy_threshold'] = global_entropy_threshold.nanmean().item()
+                    entropies_for_sort = entropies.clone()
+                    entropies_for_sort[~completion_mask.bool()] = -torch.inf
+                    # Calculate the number of tokens to keep for each response.
+                    num_valid_tokens = completion_mask.sum(dim=1)
+                    k = torch.ceil(num_valid_tokens * self.top_entropy_quantile).int()
+                    # Sort entropies in descending order to find the top-k values and their original indices.
+                    sorted_vals, sorted_indices = torch.sort(entropies_for_sort, dim=1, descending=True)
+                    # Create a tensor representing the rank of each token within its response.
+                    range_tensor = torch.arange(entropies_for_sort.size(1), device=entropies_for_sort.device).expand_as(entropies_for_sort)
+                    rank_mask = range_tensor < k.unsqueeze(1)
+                    # Scatter the rank_mask back to the original token order to create the final mask.
+                    entropy_mask = torch.zeros_like(entropies_for_sort, dtype=torch.bool)
+                    entropy_mask.scatter_(1, sorted_indices, rank_mask)
+                    # The subsequent logging code expects a single `threshold` value. We will calculate the threshold
+                    # for each response (the k-th largest entropy) and then average them for logging purposes.
+                    k_safe_for_indexing = k.clone().clamp(min=1)
+                    threshold_indices = (k_safe_for_indexing - 1).unsqueeze(1)
+                    threshold_per_response = torch.gather(sorted_vals, 1, threshold_indices.long()).squeeze(1)
+                    valid_thresholds = threshold_per_response[k > 0]
+                    if valid_thresholds.numel() > 0:
+                        threshold = valid_thresholds.mean()
+                    else:
+                        threshold = torch.tensor(torch.nan, device=entropies_for_sort.device)
+                    entropy_metrics['entropy_threshold'] = self.accelerator.gather_for_metrics(threshold).nanmean().item()
                 else:
                     raise ValueError(f'Got invalid entropy_thr_granularity: {self.entropy_thr_granularity}, should be "batch" or "completion"')
-                entropy_mask = entropies_nan >= entropy_threshold
                 local_fraction = entropy_mask.sum() / completion_mask.sum().clamp(min=1.0)
                 entropy_metrics['top_entropy_token_fraction'] = self.accelerator.reduce(local_fraction, reduction='mean').item()
 
@@ -1182,17 +1203,38 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         # VPPO/ToR: Compute the perception mask
         perception_mask = None
         if self.top_perception_quantile < 1.0 and per_token_kl_prcp is not None:
-            per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, torch.nan)
             if self.perception_thr_granularity == 'batch':
+                per_token_kl_prcp_nan = per_token_kl_prcp.masked_fill(completion_mask == 0, torch.nan)
                 perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.flatten().float(), 1 - self.top_perception_quantile)
                 metrics_data['perception_threshold'] = self.accelerator.reduce(perception_threshold, reduction='mean').item()
+                perception_mask = per_token_kl_prcp_nan >= perception_threshold
             elif self.perception_thr_granularity == 'completion':
-                perception_threshold = torch.nanquantile(per_token_kl_prcp_nan.float(), 1-self.top_perception_quantile, 1, keepdim=True)
-                global_perception_threshold = self.accelerator.gather_for_metrics(perception_threshold.squeeze(1))
-                metrics_data['perception_threshold'] = global_perception_threshold.nanmean().item()
+                per_token_kl_prcp_for_sort = per_token_kl_prcp.clone()
+                per_token_kl_prcp_for_sort[~completion_mask.bool()] = -torch.inf
+                # Calculate the number of tokens to keep for each response.
+                num_valid_tokens = completion_mask.sum(dim=1)
+                k = torch.ceil(num_valid_tokens * self.top_perception_quantile).int()
+                # Sort the perception differences in descending order to get values and original indices.
+                sorted_vals, sorted_indices = torch.sort(per_token_kl_prcp_for_sort, dim=1, descending=True)
+                # Create a rank mask to identify the top k positions in each response.
+                range_tensor = torch.arange(per_token_kl_prcp_for_sort.size(1), device=per_token_kl_prcp_for_sort.device).expand_as(per_token_kl_prcp_for_sort)
+                rank_mask = range_tensor < k.unsqueeze(1)
+                # Use scatter to map the rank mask back to the original token order, creating the final perception mask.
+                perception_mask = torch.zeros_like(per_token_kl_prcp_for_sort, dtype=torch.bool)
+                perception_mask.scatter_(1, sorted_indices, rank_mask)
+                # Calculate an average threshold for logging purposes.
+                # This is the mean of the k-th largest perception difference for each response.
+                k_safe_for_indexing = k.clone().clamp(min=1)
+                threshold_indices = (k_safe_for_indexing - 1).unsqueeze(1)
+                threshold_per_response = torch.gather(sorted_vals, 1, threshold_indices.long()).squeeze(1)
+                valid_thresholds = threshold_per_response[k > 0]
+                if valid_thresholds.numel() > 0:
+                    threshold = valid_thresholds.mean()
+                else:
+                    threshold = torch.tensor(torch.nan, device=per_token_kl_prcp_for_sort.device)
+                metrics_data['perception_threshold'] = self.accelerator.gather_for_metrics(threshold).nanmean().item()
             else:
                 raise ValueError(f'Got invalid perception_thr_granularity: {self.perception_thr_granularity}, should be "batch" or "completion"')
-            perception_mask = per_token_kl_prcp_nan >= perception_threshold
             local_fraction = perception_mask.sum() / completion_mask.sum().clamp(min=1.0)
             metrics_data['top_perception_token_fraction'] = self.accelerator.reduce(local_fraction, reduction='mean').item()
 
@@ -1333,10 +1375,20 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if self.kl_prcp_coef != 0.0 and per_token_kl_prcp is not None:
             per_token_loss = per_token_loss - self.kl_prcp_coef * per_token_kl_prcp
         if self.entropy_loss_coef != 0.0:
-            per_token_loss = per_token_loss + self.entropy_loss_coef * entropies
+            if self.entropy_loss_type == 'sampled':
+                per_token_loss = per_token_loss + self.entropy_loss_coef * -per_token_logps
+            elif self.entropy_loss_type == 'full':
+                per_token_loss = per_token_loss + self.entropy_loss_coef * entropies
+            else:
+                raise ValueError(f'Unknown entropy_loss_type: {self.entropy_loss_type}')
         if self.corrupt_entropy_loss_coef != 0.0:
             corrupt_entropies = inputs['corrupt_entropies']
-            per_token_loss = per_token_loss + self.corrupt_entropy_loss_coef * corrupt_entropies
+            if self.entropy_loss_type == 'sampled':
+                per_token_loss = per_token_loss + self.corrupt_entropy_loss_coef * -inputs['corrupted_old_per_token_logps']
+            elif self.entropy_loss_type == 'full':
+                per_token_loss = per_token_loss + self.corrupt_entropy_loss_coef * corrupt_entropies
+            else:
+                raise ValueError(f'Unknown entropy_loss_type: {self.entropy_loss_type}')
 
             corrupt_entropies_nan = corrupt_entropies.masked_fill(completion_mask == 0, torch.nan)
             per_completion_corrupt_entropies_mean = torch.nanmean(corrupt_entropies_nan, dim=1)
@@ -1363,7 +1415,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             loss = (per_token_loss * completion_mask).sum() / (batch_size * self.max_completion_length)
         elif self.loss_type in ['cispo', 'dapo']:
             # CISPO and DAPO: Normalize by total completion tokens across all processes
-            normalizer = inputs['num_items_in_batch'] / self.accelerator.num_processes
+            normalizer = inputs['num_items_in_batch'] / self.accelerator.num_processes / (self.args.steps_per_generation/self.args.gradient_accumulation_steps)
             loss = (per_token_loss * completion_mask).sum() / normalizer
         else:
             raise ValueError(f'Unknown loss type: {self.loss_type}')
@@ -2455,6 +2507,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         self.kl_prcp_schedule_args = args.kl_prcp_schedule_args
         self.corrupt_entropy_loss_coef = args.corrupt_entropy_loss_coef
         self.entropy_loss_coef = args.entropy_loss_coef
+        self.entropy_loss_type = args.entropy_loss_type
         # VPPO
         self.top_perception_quantile = args.top_perception_quantile
         self.kl_prcp_reference = args.kl_prcp_reference

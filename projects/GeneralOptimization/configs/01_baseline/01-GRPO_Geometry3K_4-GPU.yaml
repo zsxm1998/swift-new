@@ -44,7 +44,7 @@ beta: 0.04
 epsilon_high: 0.2
 num_iterations: 1
 reward_funcs: [format, accuracy]
-reward_weights: ['0.5', '0.5'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+reward_weights: ['0.1', '0.9'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
 log_completions: true
 log_entropy: true
 

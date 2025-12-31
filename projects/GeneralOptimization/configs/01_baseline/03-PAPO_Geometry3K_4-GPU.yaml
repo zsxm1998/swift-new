@@ -51,14 +51,14 @@ steps_per_generation: 128
 num_generations: 8
 rlhf_type: grpo
 loss_type: dapo
-beta: 0
+beta: 0.001
 epsilon_high: 0.28
 dynamic_sample: true
 max_resample_times: 3
 overlong_filter: false
 num_iterations: 1
 reward_funcs: [format, accuracy]
-reward_weights: ['0.5', '0.5'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+reward_weights: ['0.1', '0.9'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
 log_completions: true
 log_entropy: true
 

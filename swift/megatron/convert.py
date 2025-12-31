@@ -1,6 +1,8 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 
 import math
+import os
+import shutil
 from contextlib import contextmanager
 from dataclasses import fields
 from typing import Any, Dict
@@ -13,9 +15,10 @@ from megatron.training import get_args
 from megatron.training.checkpointing import load_checkpoint
 from megatron.training.checkpointing import save_checkpoint as mg_save_checkpoint
 from megatron.training.initialize import initialize_megatron
+from transformers.utils import strtobool
 
 from swift.llm import ExportArguments, HfConfigFactory, prepare_model_template, to_device, to_float_dtype
-from swift.utils import get_logger, get_n_params_grads
+from swift.utils import get_logger, get_n_params_grads, is_master
 from .argument import MegatronArguments
 from .model import get_megatron_model_meta
 from .utils import (convert_hf_config, forward_step_helper, get_padding_to, patch_load_base_checkpoint,
@@ -158,6 +161,9 @@ def test_convert_precision(hf_model, mg_model, template, torch_dtype=torch.float
 
     is_multimodal = template.model_meta.is_multimodal
     mg_language_model = mg_model.language_model if is_multimodal else mg_model
+    if mg_language_model.config.fp8 is not None:
+        raise ValueError('fp8 models currently do not support testing convert_precision. '
+                         'Please set `--test_convert_precision false`.')
     share_embedding = mg_language_model.share_embeddings_and_output_weights
     if hf_model is not None:
         hf_model.eval()
@@ -195,6 +201,10 @@ def test_convert_precision(hf_model, mg_model, template, torch_dtype=torch.float
         mg_inputs.pop(key, None)
     mg_inputs.update({'packed_seq_params': packed_seq_params})
     mg_device = next(mg_language_model.parameters()).device
+    # router to bfloat16
+    for n, m in mg_language_model.named_modules():
+        if n.endswith('router'):
+            m.to(hf_model.dtype)
     with torch.inference_mode(), _model_cpu_forward_context(
             mg_modules, mg_torch_dtype, 'cuda', share_embedding=share_embedding, target_device=mg_device):
         mg_logits = forward_step_helper(mg_model, mg_inputs, dtype=mg_torch_dtype)
@@ -278,12 +288,15 @@ def convert_hf2mcore(args: ExportArguments) -> None:
     bridge = megatron_model_meta.bridge_cls()
     bridge.load_weights(mg_model, args.model_info.model_dir)
     logger.info('Successfully transferred HF model weights to MG model.')
+    _test_convert_precision = strtobool(os.getenv('SWIFT_TEST_CONVERT_PRECISION', '0'))
+    if not _test_convert_precision:
+        args.save_args()
+        logger.info('Saving the model...')
+        mg_save_checkpoint(1, [mg_model], None, None, 0)
+        logger.info(f'Successfully saved Megatron model weights in `{args.output_dir}`.')
+    # Place it at the end to avoid test_convert_precision affecting precision.
     if args.test_convert_precision:
         test_convert_precision(hf_model, mg_model, template, args.test_convert_dtype)
-    args.save_args()
-    logger.info('Saving the model...')
-    mg_save_checkpoint(1, [mg_model], None, None, 0)
-    logger.info(f'Successfully saved Megatron model weights in `{args.output_dir}`.')
 
 
 def convert_mcore2hf(args: ExportArguments) -> None:
@@ -332,6 +345,12 @@ def convert_mcore2hf(args: ExportArguments) -> None:
         bridge = megatron_model_meta.bridge_cls()
         logger.info('Converting weights and saving the model...')
         bridge.save_weights([mg_model], args.output_dir)
+        if is_master():
+            args_path = os.path.join(megatron_args.adapter_load or megatron_args.load or args.model, 'args.json')
+            if os.path.exists(args_path):
+                shutil.copy(args_path, os.path.join(args.output_dir, 'args.json'))
+            else:
+                args.save_args(args.output_dir)
         logger.info(f'Successfully saved HF model weights in `{args.output_dir}`.')
         if args.test_convert_precision:
             hf_model, template = prepare_model_template(args, model=args.output_dir)

@@ -4,7 +4,9 @@ NPROC_PER_NODE=4 \
 CUDA_VISIBLE_DEVICES=0,1,2,3 \
 megatron rlhf \
     --rlhf_type dpo \
-    --load Qwen3-4B-Instruct-2507-mcore \
+    --model Qwen/Qwen3-4B-Instruct-2507 \
+    --load_safetensors true \
+    --save_safetensors true \
     --dataset 'AI-ModelScope/orpo-dpo-mix-40k' \
     --load_from_cache_file true \
     --split_dataset_ratio 0.01 \
@@ -32,4 +34,5 @@ megatron rlhf \
     --sequence_parallel true \
     --attention_backend flash \
     --beta 0.1 \
+    --rpo_alpha 0.1 \
     --loss_type sigmoid

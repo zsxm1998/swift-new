@@ -1,10 +1,13 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 import functools
+import ipaddress
 import math
 import os
+import socket
 import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
+from datetime import timedelta
 from functools import partial
 from io import BytesIO
 from types import MethodType
@@ -36,6 +39,8 @@ if TYPE_CHECKING:
 T = TypeVar('T')
 
 TensorLoRARequest = None
+_ipv6_patch_applied = False
+
 if is_vllm_available():
     from vllm.lora.request import LoRARequest
 
@@ -51,6 +56,135 @@ if is_vllm_available():
         @property
         def embeddings(self):
             return self.lora_embeddings
+
+
+def is_valid_ipv6_address(address: str) -> bool:
+    """Check if the given address is a valid IPv6 address."""
+    try:
+        ipaddress.IPv6Address(address)
+        return True
+    except ValueError:
+        return False
+
+
+def format_host_for_url(host: str) -> str:
+    """Format host for URL - wrap IPv6 addresses in brackets."""
+    if is_valid_ipv6_address(host):
+        return f'[{host}]'
+    return host
+
+
+def resolve_hostname(hostname: str) -> str:
+    """Resolve hostname to IP address, supporting both IPv4 and IPv6.
+
+    Uses socket.getaddrinfo() which supports both IPv4 and IPv6,
+    unlike socket.gethostbyname() which only supports IPv4.
+    """
+    # If it's already an IP address (IPv4 or IPv6), return as-is
+    try:
+        ipaddress.ip_address(hostname)
+        return hostname
+    except ValueError:
+        pass
+
+    # Resolve hostname using getaddrinfo (supports both IPv4 and IPv6)
+    try:
+        addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        if addr_info:
+            # Return the first resolved address
+            return addr_info[0][4][0]
+    except socket.gaierror:
+        pass
+
+    # Fallback to original hostname if resolution fails
+    return hostname
+
+
+def patch_stateless_process_group_for_ipv6():
+    """Apply monkey patch to vLLM's StatelessProcessGroup.create to support IPv6.
+
+    The original implementation hardcodes socket.AF_INET which only supports IPv4.
+    This patch detects IPv6 addresses at runtime and uses socket.AF_INET6 accordingly.
+    For IPv4 addresses, it falls back to the original implementation.
+
+    This function is idempotent - calling it multiple times is safe.
+    """
+    global _ipv6_patch_applied
+
+    if _ipv6_patch_applied:
+        return
+
+    if not is_vllm_available():
+        return
+
+    from torch.distributed import TCPStore
+    from vllm.distributed.utils import StatelessProcessGroup
+
+    # Save original method for fallback
+    _original_create = StatelessProcessGroup.create
+
+    @staticmethod
+    def _patched_stateless_pg_create(
+        host: str,
+        port: int,
+        rank: int,
+        world_size: int,
+        data_expiration_seconds: int = 3600,
+        store_timeout: int = 300,
+    ) -> StatelessProcessGroup:
+        """Patched version of StatelessProcessGroup.create that supports IPv6.
+
+        For IPv4 addresses, falls back to the original implementation.
+        """
+        # If not IPv6, use original implementation
+        if not is_valid_ipv6_address(host):
+            return _original_create(
+                host=host,
+                port=port,
+                rank=rank,
+                world_size=world_size,
+                data_expiration_seconds=data_expiration_seconds,
+                store_timeout=store_timeout,
+            )
+
+        # IPv6 path
+        launch_server = rank == 0
+        if launch_server:
+            listen_socket = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+            listen_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            listen_socket.bind((host, port))
+            listen_socket.listen()
+            listen_fd = listen_socket.fileno()
+        else:
+            listen_socket = None
+            listen_fd = None
+
+        store = TCPStore(
+            host_name=host,
+            port=port,
+            world_size=world_size,
+            is_master=launch_server,
+            timeout=timedelta(seconds=store_timeout),
+            use_libuv=False,
+            master_listen_fd=listen_fd,
+        )
+
+        return StatelessProcessGroup(
+            rank=rank,
+            world_size=world_size,
+            store=store,
+            socket=listen_socket,
+            data_expiration_seconds=data_expiration_seconds,
+        )
+
+    # Apply the monkey patch to vLLM
+    StatelessProcessGroup.create = _patched_stateless_pg_create
+
+    _ipv6_patch_applied = True
+
+
+# Apply IPv6 patch at module load time
+patch_stateless_process_group_for_ipv6()
 
 
 def nanstd(tensor: torch.Tensor) -> torch.Tensor:
@@ -638,9 +772,48 @@ def get_gather_if_zero3_context(trainer, is_zero3: Optional[bool] = None):
     return gather_if_zero3
 
 
+def prepare_fsdp(model, accelerator, evaluation_mode: bool = True):
+    """Prepare a model with FSDP wrapping
+
+    This function wraps a model with the appropriate FSDP mechanism based on
+    the accelerator configuration. It's designed for auxiliary models like
+    ref_model, teacher_model, or reward_model that need to be FSDP-wrapped
+    to prevent mixing DTensor (main model) with regular Tensor (auxiliary model).
+
+    Args:
+        model: The model to wrap with FSDP.
+        accelerator: The accelerator instance from trainer.
+        evaluation_mode: Whether to set the model to evaluation mode. Defaults to True.
+            When True, the model is frozen BEFORE FSDP wrapping to avoid float32 upcast,
+            which saves significant memory for evaluation-only models.
+
+    Returns:
+        The FSDP-wrapped model.
+    """
+    if evaluation_mode:
+        model.eval()
+        for param in model.parameters():
+            param.requires_grad_(False)
+
+    if getattr(accelerator, 'is_fsdp2', False):
+        # FSDP2 uses fully_shard API with DTensor
+        from accelerate.utils.fsdp_utils import fsdp2_prepare_model
+        model = fsdp2_prepare_model(accelerator, model)
+    else:
+        # FSDP1 uses FullyShardedDataParallel wrapper
+        from trl.models.utils import prepare_fsdp as trl_prepare_fsdp
+        model = trl_prepare_fsdp(model, accelerator)
+
+    return model
+
+
 def patch_vllm_load_adapter():
     from vllm.lora.worker_manager import LRUCacheWorkerLoRAManager
-    from vllm.lora.models import LoRAModel
+    try:
+        from vllm.lora.models import LoRAModel
+    except ImportError:
+        # vllm >= 0.13 https://github.com/vllm-project/vllm/pull/30253
+        from vllm.lora.lora_model import LoRAModel
     from vllm.lora.utils import get_adapter_absolute_path
 
     try:
@@ -685,37 +858,42 @@ def patch_vllm_load_adapter():
             # to ensure correct loading of lora weights.
             model = self._adapter_manager.model
             hf_to_vllm_mapper = getattr(model, 'hf_to_vllm_mapper', None)
-            if isinstance(lora_request, TensorLoRARequest):  # this is the patch
+
+            lora_request_kwargs = {
+                'peft_helper': peft_helper,
+                'lora_model_id': lora_request.lora_int_id,
+                'device': 'cpu',
+                'dtype': self.lora_config.lora_dtype,
+                'weights_mapper': hf_to_vllm_mapper,
+            }
+            if hasattr(self, 'embedding_padding_modules'):
+                lora_request_kwargs['embedding_modules'] = self.embedding_modules
+                lora_request_kwargs['embedding_padding_modules'] = self.embedding_padding_modules
+            else:
+                lora_request_kwargs['model_vocab_size'] = self.vocab_size
+            if hasattr(self.lora_config, 'lora_extra_vocab_size'):
+                # lora_extra_vocab_size is removed in vllm >= 0.12
+                # https://github.com/vllm-project/vllm/issues/23474
+                lora_request_kwargs['target_embedding_padding'] = (
+                    self.vocab_size + self.lora_config.lora_extra_vocab_size)
+
+            if isinstance(lora_request, TensorLoRARequest):
                 lora = self._lora_model_cls.from_lora_tensors(
-                    lora_model_id=lora_request.lora_int_id,
                     tensors=lora_tensors,
-                    peft_helper=peft_helper,
-                    device='cpu',
-                    dtype=self.lora_config.lora_dtype,
-                    embeddings=None,
-                    target_embedding_padding=self.vocab_size + self.lora_config.lora_extra_vocab_size,
-                    embedding_modules=self.embedding_modules,
-                    embedding_padding_modules=self.embedding_padding_modules,
-                    weights_mapper=hf_to_vllm_mapper,
+                    **lora_request_kwargs,
                 )
             else:
                 lora = self._lora_model_cls.from_local_checkpoint(
                     lora_path,
                     expected_lora_modules,
-                    peft_helper=peft_helper,
-                    lora_model_id=lora_request.lora_int_id,
-                    device='cpu',
-                    dtype=self.lora_config.lora_dtype,
-                    target_embedding_padding=self.vocab_size + self.lora_config.lora_extra_vocab_size,
-                    embedding_modules=self.embedding_modules,
-                    embedding_padding_modules=self.embedding_padding_modules,
-                    weights_mapper=hf_to_vllm_mapper,
+                    **lora_request_kwargs,
                 )
         except Exception as e:
             raise e
-        if lora.extra_vocab_size > self.lora_config.lora_extra_vocab_size:
-            raise ValueError(f'LoRA added vocab size {lora.extra_vocab_size} is greater than '
-                             f'lora_extra_vocab_size {self.lora_config.lora_extra_vocab_size}.')
+        if hasattr(self.lora_config, 'lora_extra_vocab_size'):
+            if lora.extra_vocab_size > self.lora_config.lora_extra_vocab_size:
+                raise ValueError(f'LoRA added vocab size {lora.extra_vocab_size} is greater than '
+                                 f'lora_extra_vocab_size {self.lora_config.lora_extra_vocab_size}.')
         return lora
 
     def patched_get_lora_tokenizer(self: TokenizerGroup, lora_request: LoRARequest):
@@ -1017,7 +1195,7 @@ def compute_chord_loss(trainer, grpo_loss: torch.Tensor) -> torch.Tensor:
         chord_sft_loss = per_token_loss_func(outputs, labels)
 
         if trainer.args.chord_enable_phi_function:
-            per_token_probs = torch.exp(-chord_sft_loss)
+            per_token_probs = torch.exp(-chord_sft_loss.detach())
             phi = per_token_probs * (1 - per_token_probs)
             chord_sft_loss *= phi
 

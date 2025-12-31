@@ -11,7 +11,8 @@ pip install "transformers>=4.57" "qwen_vl_utils>=0.0.14"
 pip install "ms-swift>=3.9.1"
 # pip install "vllm>=0.11.0"  # 若使用vllm推理后端进行推理
 ```
-
+- 关于训练缓慢：使用torch2.9会遇到训练（conv3d算子）缓慢的问题，请使用torch2.8尝试，参考[这个issue](https://github.com/pytorch/pytorch/issues/166122)。在 ms-swift>=3.11.2，你可以通过设置`SWIFT_PATCH_CONV3D=1`规避该问题，具体查看[这个issue](https://github.com/modelscope/ms-swift/issues/7108)。
+- 关于视频数据训练卡住：使用decord后端读取视频可能导致卡住问题，参考[这个issue](https://github.com/dmlc/decord/issues/269)。你可以使用torchcodec后端，具体参考[qwen_vl_utils](https://github.com/QwenLM/Qwen3-VL/blob/50068df2334f309979ff05d75f1078c8309c63ed/qwen-vl-utils/src/qwen_vl_utils/vision_process.py#L390-L400)库。
 
 ## 推理
 
@@ -174,6 +175,7 @@ Qwen3-VL的bbox输出采用归一化1000的相对坐标。你可以使用 ms-swi
 ### Dense模型
 
 以下提供对`Qwen3-VL-4B-Instruct`模型的微调脚本，我们使用混合模态数据作为Demo数据集，该示例脚本仅作为演示用途。训练显存为2 * 21GiB，训练时间为12分钟。
+- 若觉得预处理时间太长，你可以将`--packing`去除，或者使用[cached dataset](https://github.com/modelscope/ms-swift/tree/main/examples/train/cached_dataset)。
 
 ```shell
 # 2 * 21GiB

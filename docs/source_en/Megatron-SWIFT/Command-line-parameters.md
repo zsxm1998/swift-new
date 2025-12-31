@@ -35,7 +35,7 @@
 - calculate_per_token_loss: Scales the cross-entropy loss according to the number of non-padded tokens in the global batch. Default is True.
   - Note: This parameter defaults to False during RLHF training or when `task_type` is not equal to 'causal_lm'.
 - 🔥attention_backend: The attention backend to use (flash, fused, unfused, local, auto). Default is flash.
-  - **Note: The recommended `flash_attn` version is 2.7.4.post1/2.8.1**. In versions of `ms-swift` prior to 3.7, the default value for this parameter is `'auto'`. For the ViT part of a multimodal model to use FlashAttention-3, please set `--attn_impl flash_attention_3`.
+  - **Note: The recommended `flash_attn` version is 2.8.3**. In versions of `ms-swift` prior to 3.7, the default value for this parameter is `'auto'`. For the ViT part of a multimodal model to use FlashAttention-3, please set `--attn_impl flash_attention_3`.
   - Some models may not support flash attention; you need to manually set `--attention_backend unfused/fused --padding_free false`, for example: Llama4, GPT-OSS.
   - If `flash_attention_3` is installed, specifying `--attention_backend flash` will prioritize using FA3. Refer to the training script [here](https://github.com/modelscope/ms-swift/tree/main/examples/train/flash_attention_3).
 - optimizer: Optimizer type, options are 'adam', 'sgd'. Default is adam.
@@ -48,12 +48,13 @@
 - main_params_dtype: The dtype of main parameters when use_precision_aware_optimizer is enabled. Options are 'fp32' and 'fp16'. Default is 'fp32'.
 - exp_avg_dtype: The dtype of exp_avg (i.e., the first moment in the Adam optimizer) when use_precision_aware_optimizer is enabled. This dtype is used for storing the optimizer state in memory during training, but does not affect the precision in kernel computation. Options are 'fp32', 'fp16', 'bf16', and 'fp8'. Default is 'fp32'.
 - exp_avg_sq_dtype: The dtype of exp_avg_sq (i.e., the second moment in the Adam optimizer) when use_precision_aware_optimizer is enabled. This dtype is used for storing the optimizer state in memory during training, but does not affect the precision in kernel computation. Options are 'fp32', 'fp16', 'bf16', and 'fp8'. Default is 'fp32'.
-- dataloader_type: Default is 'cyclic', options are 'single', 'cyclic', 'external'. If `--streaming` is enabled, set it to external.
+- dataloader_type: Default is 'cyclic', options are 'single', 'cyclic', 'external'. If `--streaming` is enabled, set it to 'external'.
 - manual_gc: Disables the default garbage collector and manually triggers garbage collection. Default is False.
 - manual_gc_interval: The interval for manually triggering garbage collection. Defaults to 0.
 - seed: Random seed for python, numpy, pytorch, and cuda, default is 42.
 - 🔥num_workers: Number of workers for the dataloader, default is 4.
   - Note: If `--streaming true` is set, it will be set to 1.
+- no_data_sharding: Takes effect on train_dataloader when `--train_dataloader_shuffle true` is set. Defaults to False. This parameter controls the scope of dataset shuffling. If set to False, the dataset is first sharded, then each shard is shuffled independently (slightly more memory efficient); if set to True, the dataset is shuffled globally first, then sharded (better randomization). Requires "ms-swift>=3.12".
 - seq_length: Defaults to `None`, which means it will be set to `max_length`. To limit the sequence length of the dataset, it is recommended to use the `--max_length` argument under "Basic Parameters" instead; this parameter does not need to be set explicitly.
 - use_cpu_initialization: Initialize weights on the CPU. Defaults to `False`. This option is used during weight conversion between Hugging Face (HF) and MCore formats. The value typically does not need to be modified.
 - 🔥megatron_extra_kwargs: Additional arguments to be passed through directly to Megatron, provided as a JSON string. Defaults to `None`.
@@ -88,9 +89,10 @@
   - Tip: You can set it to a very large value to only save the final checkpoint.
 - 🔥no_save_optim: Do not save optimizer, default is False. When performing full-parameter training, this can significantly reduce storage time.
 - 🔥no_save_rng: Do not save RNG, default is False.
-- 🔥load: Directory of the checkpoint to load, default is None.
+- 🔥load: The directory of the checkpoint to load. Default is None. For details on resuming training from a checkpoint, please refer to the description of the `--finetune` argument.
   - Note: If you did not convert the weights with ms-swift’s `swift export`, you must also specify `--model <hf-repo>` so that the `config.json` configuration file can be loaded.
-  - For details on resuming training from a checkpoint, please refer to the description of the `--finetune` argument.
+  - Note: In "ms-swift>3.10", direct loading and saving of safetensors weights is supported, refer to [mcore-bridge documentation](./Mcore-Bridge.md).
+  - The difference between `--model` and `--load`: `--model/--adapters/--ref_model/--ref_adapters` are followed by safetensors weight directories, while `--load/--adapter_load/--ref_load/--ref_adapter_load` are followed by mcore weight directories. `--model/--adapters` do not support loading checkpoint resume states, so in "ms-swift>=3.12", if you set `--no_save_optim false`, mcore weight format will be additionally saved for checkpoint resumption, and you need to use `--load/--adapter_load` to load the checkpoint resume state.
 - 🔥no_load_optim: Do not load optimizer, default is False.
   - Note: When resuming training from a checkpoint, setting `--no_load_optim false` (i.e., loading the optimizer state) typically consumes significantly more GPU memory than setting `--no_load_optim true` (i.e., skipping the optimizer state).
 - 🔥no_load_rng: Do not load RNG, default is False.
@@ -143,9 +145,10 @@ For guidance on selecting parallelization strategies, please refer to the [Train
 - log_validation_ppl_to_tensorboard: Writes validation perplexity to TensorBoard. Default is True.
 - log_memory_to_tensorboard: Writes memory logs to TensorBoard. Default is True.
 - logging_level: Logging level. Default is None.
-- wandb_project: The name of the wandb project. Defaults to '', which means ignoring wandb.
-- wandb_exp_name: The name of the wandb experiment. Defaults to ''.
-- wandb_save_dir: The local path to save wandb results. Defaults to ''.
+- report_to: (ms-swift>=3.12) The logging backend to enable. Defaults to None. Options are 'wandb' and 'swanlab'. (TensorBoard will always be started). Login can be done using the `WANDB_API_KEY` or `SWANLAB_API_KEY` environment variables.
+- wandb_project: The wandb/swanlab project name, depending on `report_to`. Defaults to 'megatron-swift'.
+- wandb_exp_name: The wandb/swanlab experiment name. Defaults to the value of `--save`.
+- wandb_save_dir: The path to save wandb/swanlab results locally. Default is None, which means it will be stored in `f'{args.save}/wandb'` or `f'{args.save}/swanlab'`.
 
 **Evaluation Parameters**:
 
@@ -285,9 +288,10 @@ LoRA Training:
 
 **Mcore-Bridge Parameters**
 
-- 🔥load_safetensors: Defaults to False. Whether to load weights directly from safetensors.
-- 🔥save_safetensors: Defaults to False. Whether to save directly as safetensors weights. Note: if this parameter is set to True, optimizer weights, random number states, and other checkpoint resumption contents will not be stored.
-- model: The model_id or model_path of safetensors weights. Defaults to None.
+- 🔥load_safetensors: This parameter will become ineffective in "ms-swift>=3.12" (defaults to False in previous versions). Weights will be loaded based on priority: if `--load` does not exist, safetensors weights `--model` will be loaded; the same applies to `--adapters` and `--adapter_load`, etc.
+  - Note: In "ms-swift>=3.12", this parameter is retained for shell script compatibility but no longer has any effect.
+- 🔥save_safetensors: Defaults to True, whether to directly save as safetensors weights. This parameter in "ms-swift>=3.12" supports saving checkpoint resume content such as optimizer weights and random number states (additionally storing mcore format weights), controlled by `--no_save_optim` and `--no_save_rng`. When resuming from checkpoint, use the `--load/--adapter_load` parameter to load mcore format weights.
+- model: The model_id or model_path of safetensors weights. Default is None. Supports resume training from checkpoint using `--no_load_optim false --no_load_rng false`.
 - model_type: Model type. For details, refer to [ms-swift command-line parameters documentation](../Instruction/Command-line-parameters.md).
 - adapters: adapter_id or adapter_path of LoRA incremental weights in safetensors format. Default is `[]`.
 - ref_model: model_id or model_path of ref_model safetensors weights. Required when using DPO/GRPO/KTO algorithms with full-parameter training. Default is None, set to `--model`.
@@ -304,6 +308,7 @@ LoRA Training:
 Megatron training parameters are inherited from Megatron parameters and basic parameters (**sharing dataset, template, etc. with ms-swift, and also supporting model-specific parameters from ms-swift**). For details on basic parameters, please refer to [here](../Instruction/Command-line-parameters.md#base-arguments). Additionally, the following parameters are included:
 
 - add_version: Adds a directory `<version>-<timestamp>` to `save` to prevent overwriting weights, default is True.
+- check_model: Check local model files for corruption or modification and give a prompt, default is True. **If in an offline environment, please set to False.**
 - padding_free: Flattens the data in a batch to avoid padding, thereby reducing memory usage and accelerating training. Default is True.
   - If you wish to customize the attention_mask, you can set `--padding_free false`.
   - Note: **The Megatron-SWIFT training feature prioritizes support for the padding-free format**. Unless under special circumstances, please do not modify this value.
@@ -314,7 +319,7 @@ Megatron training parameters are inherited from Megatron parameters and basic pa
   - Note: The "learning rate" printed in the logs is the learning rate of the LLM.
 - aligner_lr: Specifies the learning rate for the aligner module in multimodal models. Default is `None`, same as `learning_rate`.
 - gradient_checkpointing_kwargs: Arguments passed to `torch.utils.checkpoint`. For example: set `--gradient_checkpointing_kwargs '{"use_reentrant": false}'`. Defaults to `None`. This parameter only takes effect when `vit_gradient_checkpointing` is enabled.
-- 🔥packing: Packs data samples of varying lengths into samples of uniform length, achieving load balancing across nodes and processes during training (preventing long texts from slowing down short text training), thereby improving GPU utilization and maintaining stable memory usage. When using `--attention_backend flash`, it ensures that different sequences within packed samples remain independent and invisible to each other (except for Qwen3-Next, which contains linear-attention). This parameter defaults to `False`. All training tasks in Megatron-SWIFT support this parameter. Note: **packing will reduce the number of dataset samples, please adjust gradient accumulation steps and learning rate accordingly**.
+- 🔥packing: Use the `padding_free` method to pack data samples of different lengths into samples of **approximately** uniform length (packing ensures that complete sequences are not split), achieving load balancing across nodes and processes during training (preventing long texts from slowing down short text training), thereby improving GPU utilization and maintaining stable memory usage. When using `--attention_backend flash`, it ensures that different sequences within packed samples remain independent and invisible to each other (except for Qwen3-Next, which contains linear-attention). This parameter defaults to `False`. All training tasks in Megatron-SWIFT support this parameter. Note: **packing will reduce the number of dataset samples, please adjust gradient accumulation steps and learning rate accordingly**.
 - packing_length: the length to use for packing. Defaults to None, in which case it is set to max_length.
 - packing_num_proc: Number of processes for packing, default is 1. Note that different values of `packing_num_proc` will result in different packed datasets. (This parameter does not take effect during streaming packing). Usually there is no need to modify this value, as packing speed is much faster than tokenization speed.
 - streaming: Stream data loading and processing, default is False. (The shuffling of streaming datasets is not thorough, which may lead to severe loss fluctuations.)
@@ -329,13 +334,21 @@ Megatron training parameters are inherited from Megatron parameters and basic pa
 - num_labels: Required for classification models (i.e., `--task_type seq_cls`). Represents the number of labels; default is None.
 - problem_type: Required for classification models (i.e., `--task_type seq_cls`). Options: "regression", "single_label_classification", "multi_label_classification". Defaults to None. If the model is a reward_model or num_labels equals 1, this parameter is 'regression'; otherwise it is 'single_label_classification'.
 - 🔥save_strategy: Save strategy, optional values are `'steps'` and `'epochs'`, default is `'steps'`. When set to `'epoch'`, both `save_interval` and `eval_interval` are forcibly set to `1`, meaning weights are saved every epoch. `save_retain_interval` can be set to an integer, indicating after how many epochs a checkpoint is retained.
+- dataset_shuffle: Whether to perform random shuffling on the dataset. Defaults to True.
+- Note: **Randomization in Megatron-SWIFT consists of two parts**: dataset-level shuffling, controlled by `dataset_shuffle`; and train_dataloader-level shuffling, controlled by `train_dataloader_shuffle`.
+- train_dataloader_shuffle: Whether to use shuffling for train_dataloader. Default is True. Requires "ms-swift>=3.12".
+  - In "ms-swift>3.12", val_dataset will no longer be shuffled.
+- dataloader_pin_memory: Default is True. Using this parameter requires "ms-swift>=3.12".
+- dataloader_persistent_workers: Default is True. Using this parameter requires "ms-swift>=3.12".
+- dataloader_prefetch_factor: Default is 2. Using this parameter requires "ms-swift>=3.12".
+- 🔥group_by_length: (ms-swift>=3.12) Whether to group samples with approximately the same length together in the training dataset (with a random factor) to minimize padding and ensure load balancing across nodes and processes for improved efficiency. Defaults to False. For the specific algorithm, refer to `transformers.trainer_pt_utils.get_length_grouped_indices`.
 
 
 ## RLHF Parameters
 
 In addition to inheriting the training parameters, the following parameters are also supported:
 
-- 🔥rlhf_type: Default is 'dpo'. Currently, 'dpo', 'grpo', 'kto', and 'rm' are available.
+- 🔥rlhf_type: Default is 'dpo'. Currently, 'dpo', 'grpo', 'kto', 'rm', and 'gkd' are available.
 - loss_scale: Overrides the `loss_scale` in [basic parameters](../Instruction/Command-line-parameters.md). Default is 'last_round'.
 - calculate_per_token_loss: Overrides the Megatron parameter. Default is False.
 
@@ -375,6 +388,7 @@ In addition to inheriting the training parameters, the following parameters are 
 - steps_per_generation: Number of optimization steps per generation round, i.e., the ratio of sampling batch size to global_batch_size. Default is 1.
 - generation_batch_size: Sampling batch size, must be a multiple of global_batch_size. Default equals global_batch_size * steps_per_generation.
 - num_generations: Number of samples per prompt, the G value in the paper, default is 8.
+- num_generations_eval: Number of generations to sample during evaluation. This allows using fewer generations during evaluation to save computation. If `None`, uses the value of `num_generations`. Default is None.
 - reward_funcs: GRPO algorithm reward functions. Options include `accuracy`, `format`, `cosine`, `repetition`, and `soft_overlong`. See swift/plugin/orm.py. You can also customize your own reward functions in the plugin. Default is `[]`.
 - reward_weights: Weights for each reward function. Must match the total number of reward functions and reward models. Default is None, meaning all rewards have equal weights of `1.0`.
   - Tip: If GRPO training includes `--reward_model`, it is added at the end of the reward functions.
@@ -410,8 +424,28 @@ In addition to inheriting the training parameters, the following parameters are 
 - delta: Bilateral GRPO upper bound clipping value from the [INTELLECT-2 tech report](https://huggingface.co/papers/2505.07291). If set, it is recommended to be greater than 1 + epsilon. Default is None.
 - importance_sampling_level: Controls importance sampling ratio calculation. Options are `token` and `sequence`. In `token` mode, the original log probability ratio for each token is preserved. In `sequence` mode, the log probability ratios of all valid tokens in the sequence are averaged. The [GSPO paper](https://arxiv.org/abs/2507.18071) uses sequence-level calculation to stabilize training. Default is `token`.
 - scale_rewards: Specifies the reward scaling strategy. Options include `group` (scale by within-group standard deviation), `batch` (scale by batch-wide standard deviation), and `none` (no scaling). In ms-swift < 3.10, this parameter is boolean, where `true` corresponds to `group` and `false` corresponds to `none`. The default value is bound to `advantage_estimator`: `grpo` corresponds to `group`, `rloo` corresponds to `none`, and `reinforce_plus_plus` corresponds to `batch`.
+- rollout_importance_sampling_mode: Training-inference mismatch correction mode. Options are `token_truncate`, `token_mask`, `sequence_truncate`, `sequence_mask`. Default is None (disabled). For details, refer to the [documentation](../Instruction/GRPO/AdvancedResearch/training_inference_mismatch.md).
+- rollout_importance_sampling_threshold: Threshold for importance sampling weights, used for truncating or masking extreme weights. Default is 2.0.
+- log_rollout_offpolicy_metrics: Whether to log training-inference mismatch diagnostic metrics (KL, PPL, χ², etc.) when `rollout_importance_sampling_mode` is not set. When `rollout_importance_sampling_mode` is set, metrics are always logged. Default is False.
+- off_policy_sequence_mask_delta: Off-Policy Sequence Masking threshold from [DeepSeek-V3.2 paper](https://arxiv.org/abs/2512.02556). When set, computes `mean(old_policy_logps - policy_logps)` for each sequence. If this value exceeds the threshold AND the sequence has negative advantage, the sequence is masked out from loss computation. For details, refer to the [documentation](../Instruction/GRPO/AdvancedResearch/training_inference_mismatch.md#off-policy-sequence-masking).
 
 Built-in reward function parameters refer to the [documentation](../Instruction/Command-line-parameters.md#reward-function-parameters).
+
+### GKD Parameters
+
+- teacher_model: Path or model ID of the teacher model. Required.
+- teacher_model_type: Teacher model type. Default is None, auto-detected.
+- teacher_model_revision: Teacher model version. Default is None.
+- beta: JSD divergence interpolation coefficient. 0.0 means Forward KL, 0.5 means symmetric JSD, 1.0 means Reverse KL. Default is 0.5.
+- lmbda: On-Policy learning probability. 0.0 means pure Off-Policy, 1.0 means pure On-Policy. Default is 0.5.
+- seq_kd: Whether to use teacher-generated responses (Sequential KD), not yet supported. Default is False.
+- temperature: Temperature for sampling and loss computation. Default is 0.9.
+- offload_teacher_model: Whether to offload teacher model to CPU to save GPU memory. Default is False.
+- sft_alpha: Mixing coefficient for SFT loss, `loss = jsd_loss + sft_alpha * sft_loss`. Takes effect when using dataset responses (Off-Policy). Default is 0.
+- max_completion_length: Maximum tokens for generation. Default is 512.
+- vllm_mode: Same as GRPO parameter, used for On-Policy generation. Colocate mode deploys vLLM within the program.
+  - Note: On-Policy generation requires vLLM (`--use_vllm true --vllm_mode colocate/server`).
+  - When `lmbda > 0` but vLLM is not enabled, it will automatically fall back to Off-Policy mode.
 
 ## Export Parameters
 

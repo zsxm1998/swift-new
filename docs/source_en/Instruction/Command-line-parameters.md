@@ -13,6 +13,7 @@ The command-line arguments will be introduced in four categories: basic argument
 - 🔥tuner_backend: Optional values are `'peft'` and `'unsloth'`. Default is `'peft'`.
 - 🔥train_type: Optional values are `'lora'`, `'full'`, `'longlora'`, `'adalora'`, `'llamapro'`, `'adapter'`, `'vera'`, `'boft'`, `'fourierft'`, `'reft'`. Default is `'lora'`.
 - 🔥adapters: A list specifying adapter IDs or paths. Default is `[]`. This parameter is typically used in inference/deployment commands, for example: `swift infer --model '<model_id_or_path>' --adapters '<adapter_id_or_path>'`. It can occasionally be used for resuming training from a checkpoint. The difference between this parameter and `resume_from_checkpoint` is that **this parameter only loads adapter weights**, without restoring the optimizer state or random seed, and does not skip already-trained portions of the dataset.
+  - The difference between `--model` and `--adapters`: `--model` is followed by the directory path of the complete weights, which contains full weight information such as model/tokenizer/config, for example `model.safetensors`. `--adapters` is followed by a list of incremental adapter weight directory paths, which contain incremental weight information of the adapters, for example `adapter_model.safetensors`.
 - external_plugins: A list of external `plugin.py` files that will be registered into the plugin module (i.e., imported). See an example [here](https://github.com/modelscope/ms-swift/tree/main/examples/train/grpo/plugin/run_external_reward_func.sh). Default is `[]`.
 - seed: Global random seed. Default is 42.
   - Note: This random seed is independent of `data_seed`, which controls randomness in the dataset.
@@ -51,19 +52,21 @@ The command-line arguments will be introduced in four categories: basic argument
 - init_strategy: Strategy for initializing uninitialized parameters when loading a model (especially useful for custom architectures). Options: `'zero'`, `'uniform'`, `'normal'`, `'xavier_uniform'`, `'xavier_normal'`, `'kaiming_uniform'`, `'kaiming_normal'`, `'orthogonal'`. Default is `None`.
 
 ### Data Arguments
-- 🔥dataset: A list of dataset IDs or paths. Default is `[]`. Each dataset should be specified in the format: `'dataset_id_or_path:subset#sample_count'`, where subset and sample count are optional. Local datasets support formats such as jsonl, csv, json, and folders. **Open-source datasets from the hub can be used offline by `git clone`-ing them locally and passing the local folder path**. For custom dataset formats, refer to the [Custom Dataset Documentation](../Customization/Custom-dataset.md). You can use multiple datasets by passing `--dataset <dataset1> <dataset2>`.
+- 🔥dataset: A list of dataset IDs or paths. Default is `[]`. Each dataset should be specified in the format: `'dataset_id_or_path:subset#sample_size'`, where subset and sample size are optional. Local datasets support formats such as jsonl, csv, json, and folders. **Open-source datasets from the hub can be used offline by `git clone`-ing them locally and passing the local folder path**. For custom dataset formats, refer to the [Custom Dataset Documentation](../Customization/Custom-dataset.md). You can use multiple datasets by passing `--dataset <dataset1> <dataset2>`.
   - Subset: This parameter is only effective when the dataset is a dataset ID or a folder. If subsets were specified during registration and only one exists, that subset is selected by default; otherwise, the default subset `'default'` is used. You can select multiple subsets using `/`, e.g., `<dataset_id>:subset1/subset2`. You can also use `'all'` to select all registered subsets, e.g., `<dataset_id>:all`. See an example of registration [here](https://modelscope.cn/datasets/swift/garbage_competition).
-  - Sampling count: By default, the full dataset is used. You can sample the dataset by specifying `#sample_count`. If the sample count is less than the total number of samples, random sampling without replacement is performed. If the sample count exceeds the total, the dataset is repeated `sample_count // total_samples` times, with an additional `sample_count % total_samples` samples randomly sampled. Note: For streaming datasets (`--streaming true`), only sequential sampling is performed. If `--dataset_shuffle false` is set, non-streaming datasets also use sequential sampling.
+  - Sampling size: Uses the complete dataset by default. You can sample from the selected dataset by setting `#sample_size`, for example `<dataset_path#1000>`. If the sample size is less than the total number of samples, random sampling without replacement is performed. If the sample count exceeds the total, the dataset is repeated `sample_size // total_samples` times, with an additional `sample_size % total_samples` samples randomly sampled. Note: For streaming datasets (`--streaming true`), only sequential sampling is performed. If `--dataset_shuffle false` is set, non-streaming datasets also use sequential sampling.
 - 🔥val_dataset: A list of validation dataset IDs or paths. Default is `[]`.
 - 🔥cached_dataset: Use cached datasets (generated with the command `swift export --to_cached_dataset true ...`) to avoid GPU time being occupied by tokenization during training/inference on large datasets. This parameter is used to set the folder path(s) of cached training datasets, and defaults to `[]`. For examples, see [here](https://github.com/modelscope/ms-swift/tree/main/examples/train/cached_dataset).
   - Note: In "ms-swift>=3.11", cached_dataset only stores an additional length field in the dataset (to avoid storage pressure) and filters out data samples that would cause errors. During training/inference, the `--max_length` parameter is supported for filtering/truncating excessively long data and the `--packing` parameter is supported. The actual data preprocessing process occurs synchronously during training and overlaps with the training process, which does not affect training speed.
-  - cached_dataset is compatible between `ms-swift` and `Megatron-SWIFT`, and supports pt/sft/infer/rlhf (requires "ms-swift>=3.11").
+  - cached_dataset is universal between `ms-swift` and `Megatron-SWIFT`, and supports pt/sft/infer/rlhf (requires "ms-swift>=3.11"), use `--template_mode` to set the training type; in "ms-swift>=3.12", it supports embedding/reranker/seq_cls tasks, use `--task_type` to set the task type.
+  - In "ms-swift>=3.12", support for sampling from cache_dataset has been added, with the syntax `<cached_dataset_path>#sample_size`. It supports cases where the sample size is both greater than and less than the number of samples. For functionality and implementation, refer to the introduction of `--dataset`.
 - cached_val_dataset: Folder path(s) for cached validation datasets, default is `[]`.
 - 🔥split_dataset_ratio: The ratio for splitting a validation set from the training set when `val_dataset` is not specified. Default is `0.`, meaning no splitting occurs.
   - Note: In "ms-swift<3.6", the default value was `0.01`.
 - data_seed: Random seed for dataset operations. Default is `42`.
 - 🔥dataset_num_proc: Number of processes for dataset preprocessing. Default is `1`.
-- 🔥load_from_cache_file: Whether to load the dataset from cache. Default is `False`. **Recommended to set to `True` during actual training and `False` during debugging**.
+  - Note: For text-only models, it is recommended to increase this value to accelerate preprocessing speed. For multimodal models, it is not recommended to set it too high, as this may lead to slower preprocessing speed (if multimodal models experience 100% CPU utilization but extremely slow processing speed, it is recommended to additionally set the `OMP_NUM_THREADS` environment variable).
+- 🔥load_from_cache_file: Whether to load the dataset from cache. Default is `False`. **Recommended to set to `True` during actual training and `False` during debugging**. You can modify the `MODELSCOPE_CACHE` environment variable to control the cache path.
   - Note: Note: In "ms-swift<3.9", the default value was `True`.
 - dataset_shuffle: Whether to shuffle the training dataset. Default is `True`.
   - Note: **Shuffling in CPT/SFT involves two parts**: dataset-level shuffling (controlled by `dataset_shuffle`) and dataloader-level shuffling (controlled by `train_dataloader_shuffle`).
@@ -71,8 +74,8 @@ The command-line arguments will be introduced in four categories: basic argument
 - streaming: Whether to stream and process the dataset on-the-fly. Default is `False`. (The shuffling of streaming datasets is not thorough, which may lead to severe loss fluctuations.)
   - Note: You must set `--max_steps` explicitly, as streaming datasets do not have a defined length. You can achieve behavior equivalent to `--num_train_epochs` by setting `--save_strategy epoch` and a large `max_steps`. Alternatively, set `max_epochs` to ensure training stops after the specified number of epochs, allowing model evaluation and checkpoint saving.
   - Note: Streaming avoids waiting for preprocessing by overlapping it with training. However, preprocessing is only performed on rank 0 and then distributed to other processes. **This is typically less efficient than non-streaming data sharding**. When the training `world_size` is large, preprocessing and data distribution can become a bottleneck.
-- interleave_prob: Default is `None`. By default, multiple datasets are combined using `concatenate_datasets` from the datasets library. If this parameter is set, `interleave_datasets` is used instead. This is typically used for combining streaming datasets and is passed directly to `interleave_datasets`.
-- stopping_strategy: Options are `"first_exhausted"` or `"all_exhausted"`. Default is `"first_exhausted"`. Passed to the `interleave_datasets` function.
+- interleave_prob: Default is `None`. By default, multiple datasets are combined using `concatenate_datasets` from the datasets library. If this parameter is set, `interleave_datasets` is used instead. This is typically used for combining streaming datasets and is passed directly to `interleave_datasets`. This parameter does not apply to `--val_dataset`.
+- stopping_strategy: Options are `"first_exhausted"` or `"all_exhausted"`. Default is `"first_exhausted"`. Passed to the `interleave_datasets` function. This parameter does not apply to `--val_dataset`.
 - shuffle_buffer_size:  Specifies the shuffle buffer size for **streaming datasets**. Default is `1000`. Only effective when `dataset_shuffle` is `True`.
 - download_mode: Dataset download mode. Options: `'reuse_dataset_if_exists'` or `'force_redownload'`. Default is `'reuse_dataset_if_exists'`.
   - Typically set to `--download_mode force_redownload` when encountering errors with hub datasets.
@@ -91,7 +94,7 @@ The command-line arguments will be introduced in four categories: basic argument
 - 🔥system: Custom system message field. Accepts either a string or a **path to a .txt file**. Default is `None`, using the default system message defined in the registered template.
   - Note: In terms of priority, the `system` field from the dataset takes precedence, followed by `--system`, and finally the `default_system` set in the registered template.
 - 🔥max_length: Maximum token length after `tokenizer.encode` for a single data sample (to prevent OOM during training). Samples exceeding this limit are handled according to `truncation_strategy`. Default is `None`, meaning it's set to the model’s maximum supported sequence length (`max_model_len`).
-  - In PPO, GRPO, and inference scenarios, `max_length` refers to `max_prompt_length`.
+  - In PPO, GRPO, GKD and inference scenarios, `max_length` refers to `max_prompt_length`.
 - truncation_strategy: How to handle samples whose tokens exceed `max_length`. Supports 'delete', 'left', 'right', and 'split', which represent deleting, left truncation, right truncation, and splitting into multiple data samples, respectively. The default is 'delete'.
   - Note: `--truncation_strategy split` is only supported during pretraining, i.e., in `swift/megatron pt` scenarios, and requires "ms-swift>=3.11". This strategy will split oversized fields into multiple data samples to avoid token waste. (This feature is not compatible with cached_dataset)
   - Note: For multimodal models, if `truncation_strategy` is set to `'left'` or `'right'` during training, **ms-swift preserves all image tokens and other modality-specific tokens**, which may lead to OOM.
@@ -102,21 +105,25 @@ The command-line arguments will be introduced in four categories: basic argument
   - This also works correctly when **images are resized during training** (e.g., when `max_pixels` is set).
 - use_chat_template: Whether to use a chat template or a generation template (the latter typically used in pretraining). Default is `True`.
   - Note: `swift pt` defaults to `False`, using the generation template. This setting provides good **compatibility with multimodal models**.
+- padding_side: Padding side when training with `batch_size >= 2`. Options: `'left'`, `'right'`. Default is `'right'`.
+  - Note: PPO and GKD default to `'left'`. (During inference with `batch_size >= 2`, only left-padding is applied.)
 - 🔥padding_free: Flattens data within a batch to avoid padding, reducing GPU memory usage and accelerating training (**sequences in the same batch remain invisible to each other**). Default is `False`. Currently supported in CPT/SFT/DPO/GRPO/KTO/GKD.
   - Note: Use `padding_free` together with `--attn_impl flash_attn` and `transformers>=4.44`. See [this PR](https://github.com/huggingface/transformers/pull/31629) for details. (Same as packing.)
   - **Compared to packing, padding_free avoids extra preprocessing time, but packing offers faster training and more stable memory usage**.
-- padding_side: Padding side when training with `batch_size >= 2`. Options: `'left'`, `'right'`. Default is `'right'`.
-  - Note: PPO and GKD default to `'left'`. (During inference with `batch_size >= 2`, only left-padding is applied.)
-- loss_scale: Loss weighting strategy for training tokens. Default is `'default'`, meaning all response tokens (including history) are weighted at 1 in cross-entropy loss (**tokens from system/user/multimodal inputs in messages, and `tool_response` in Agent training, are excluded from loss calculation**). Options include `'default'`, `'last_round'`, `'all'`, `'ignore_empty_think'`, `'last_round_with_ignore_empty_think'`, and agent-specific scales: `'react'`, `'hermes'`, `'qwen'`, `'agentflan'`, `'alpha_umi'`, etc. See [loss_scale.py](https://github.com/modelscope/ms-swift/blob/main/swift/plugin/loss_scale/loss_scale.py) for full list.
-  - 'last_round': Only compute loss for the final round of response. (Commonly used; **RLHF defaults to this**)
-  - 'all': Compute loss for all tokens. (**`swift pt` defaults to this**)
-  - 'ignore_empty_think': Based on 'default', ignore loss computation for empty `'<think>\n\n</think>\n\n'` (as long as it matches the regex `'<think>\\s*</think>\\s*'`).
-  - 'last_round_with_ignore_empty_think': Based on 'last_round', ignore loss computation for empty `'<think>\n\n</think>\n\n'` (as long as it matches the regex `'<think>\\s*</think>\\s*'`).
-  - `'react'`, `'hermes'`, `'qwen'`: Based on `'default'`, adjust the loss weight of the `tool_call` portion to 2.
+- 🔥loss_scale: Loss weight configuration for training tokens. Default is `'default'`. loss_scale includes 3 basic strategies: 'default', 'last_round', 'all', and other strategies: 'ignore_empty_think' and agent-specific ones: 'react', 'hermes', 'qwen', 'agentflan', 'alpha_umi', etc. For available options, refer to [loss_scale.py](https://github.com/modelscope/ms-swift/blob/main/swift/plugin/loss_scale/loss_scale.py). ms-swift>=3.12 supports mixing basic strategies with other strategies, for example: `'default+ignore_empty_think'`, `'last_round+ignore_empty_think'`. If no basic strategy is specified, it defaults to 'default', for example: 'hermes' is equivalent to 'default+hermes'.
+  - 'default': All responses (including history) are calculated with weight 1 for cross-entropy loss (**system/user/multimodal tokens in messages and `tool_response` parts in Agent training are not included in loss calculation**). (**Default value for SFT**)
+  - 'last_round': Only calculate loss for the last round response. In "ms-swift>=3.12", the last round means all content after the last "user", previously it only included the last "assistant". (**Default value for RLHF**)
+  - 'all': Calculate loss for all tokens. (**Default value for `swift pt`**)
+  - 'ignore_empty_think': Ignore loss computation for empty `'<think>\n\n</think>\n\n'` (as long as it matches the regex `'<think>\\s*</think>\\s*'`).
+  - 'react', 'hermes', 'qwen': Adjust the loss weight of the `tool_call` part to 2.
 - sequence_parallel_size: Size for sequence parallelism. Default is 1. Currently supported in CPT/SFT/DPO/GRPO. Training scripts can be found [here](https://github.com/modelscope/ms-swift/tree/main/examples/train/sequence_parallel).
-- response_prefix: Prefix string for the model's response. For example, QwQ-32B sets `response_prefix` to `'\<think\>\n'`. This parameter only takes effect during inference. Default is `None`, automatically determined by the model.
 - template_backend: Backend for template processing. Options are `'swift'` or `'jinja'`. Default is `'swift'`. If `'jinja'` is used, `apply_chat_template` from Transformers will be applied.
   - Note: The `'jinja'` backend only supports inference and does not support training (as it cannot determine the token ranges for loss computation).
+- response_prefix: The prefix string for responses, this parameter only takes effect during inference. Default is None, determined by the enable_thinking parameter and template type.
+- enable_thinking: (ms-swift>=3.12) This parameter takes effect during inference, indicating whether to enable thinking mode. Default is None, the default value is determined by the template (model) type (True for thinking/hybrid thinking templates, False for non-thinking templates). If enable_thinking is False, a non-thinking prefix is added, for example the Qwen3-8B hybrid thinking model adds the prefix `'<think>\n\n</think>\n\n'`, while Qwen3-8B-Thinking does not add a prefix. If enable_thinking is True, a thinking prefix is added, for example `'<think>\n'`. Note: The priority of this parameter is lower than the response_prefix parameter.
+  - Note: For thinking models (thinking/hybrid thinking) or when enable_thinking is explicitly enabled, we will remove historical thinking content during both inference and training (the thinking content of the last round is retained, i.e., the content after the last user message). If the basic strategy of loss_scale during training is not last_round, for example 'default', then historical thinking content will not be removed.
+- add_non_thinking_prefix: This parameter only takes effect during training, indicating whether to add a non-thinking prefix to data samples whose assistant part does not start with the thinking marker `'<think>'` (typically hybrid thinking models contain a non-thinking prefix). This feature allows swift's built-in datasets to train hybrid thinking models. Default value is True. For example: the non-thinking prefix for the Qwen3-8B hybrid thinking model is `'<think>\n\n</think>\n\n'`, while the non-thinking prefix for Qwen3-8B-Thinking/Instruct is `''`. Note: During training, if the basic strategy of loss_scale is last_round, this modification is only applied to the last round; otherwise, for example 'default' or 'all', this modification is applied to every round of data. If set to False, no non-thinking prefix is added to data samples.
+
 
 ### Generation Arguments
 
@@ -135,6 +142,7 @@ Refer to the [generation_config](https://huggingface.co/docs/transformers/main_c
   - Note: The `eos_token` is removed from the output response, while additional stop words are preserved in the output.
 - logprobs: Whether to return log probabilities. Default is `False`.
 - top_logprobs: Number of top log probabilities to return. Default is `None`.
+- structured_outputs_regex: A regular expression pattern for structured outputs (guided decoding). When set, the model's generation is constrained to match the specified regex pattern. Only effective when `infer_backend` is `vllm`. Default is `None`.
 
 ### Quantization Arguments
 
@@ -191,6 +199,7 @@ This list inherits from the Transformers `Seq2SeqTrainingArguments`, with ms-swi
 - 🔥deepspeed: Default is `None`. Can be set to `'zero0'`, `'zero1'`, `'zero2'`, `'zero3'`, `'zero2_offload'`, `'zero3_offload'` to use built-in DeepSpeed configurations in ms-swift. You can also pass a path to a custom DeepSpeed config file.
 - zero_hpz_partition_size: Default is `None`. This enables ZeRO++ functionality—model sharding within nodes and data sharding across nodes. If encountering `grad_norm NaN`, try using `--torch_dtype float16`.
 - deepspeed_autotp_size: DeepSpeed tensor parallelism size. Default is 1. To use DeepSpeed AutoTP, set `--deepspeed` to `'zero0'`, `'zero1'`, or `'zero2'`. (Note: Only supports full-parameter training)
+- 🔥fsdp: FSDP2 distributed training configuration. Default is `None`. Can be set to `'fsdp2'` to use built-in FSDP2 configurations in ms-swift. You can also pass a path to a custom FSDP config file. FSDP2 is PyTorch's native distributed training solution, use either this or DeepSpeed (not both).
 - 🔥per_device_train_batch_size: Default is 1.
 - 🔥per_device_eval_batch_size: Default is 1.
 - 🔥gradient_accumulation_steps: Gradient accumulation steps. Default is `None`, meaning `gradient_accumulation_steps` is automatically calculated so that `total_batch_size >= 16`. Total batch size is computed as `per_device_train_batch_size * gradient_accumulation_steps * world_size`. In GRPO training, default is 1.
@@ -209,6 +218,7 @@ This list inherits from the Transformers `Seq2SeqTrainingArguments`, with ms-swi
   - Note: When using DDP without DeepSpeed/FSDP and `gradient_checkpointing_kwargs` is `None`, it defaults to `'{"use_reentrant": false}'` to prevent errors.
 - full_determinism: Ensures reproducible results during training. Note: This may negatively impact performance. Default is `False`.
 - 🔥report_to: Default is `'tensorboard'`. You can specify multiple loggers, e.g., `--report_to tensorboard wandb swanlab`, or `--report_to all`.
+  - If you specify `--report_to wandb`, you can set the project name through `WANDB_PROJECT` and specify the API KEY corresponding to your account through `WANDB_API_KEY`.
 - logging_first_step: Whether to log metrics at the first step. Default is `True`.
 - logging_steps: Interval for logging. Default is 5.
 - router_aux_loss_coef: Used in MoE model training to set the weight of auxiliary loss. Default is `0.`.
@@ -245,8 +255,12 @@ Other important parameters:
 - 🔥dataloader_num_workers: Default is `None`. On Windows, set to 0; otherwise, 1.
 - dataloader_pin_memory: Default is `True`.
 - dataloader_persistent_workers: Default is `False`.
-- dataloader_prefetch_factor: Default is `None`. If `dataloader_num_workers > 0`, set to 10.
-- train_dataloader_shuffle: Whether to shuffle the dataloader in CPT/SFT training. Default is `True`. Not effective for `IterableDataset`, which uses sequential loading.
+- dataloader_prefetch_factor: Default is `None`. If `dataloader_num_workers > 0`, it is set to 2. Number of batches loaded in advance by each worker. 2 means there will be a total of 2 * num_workers batches prefetched across all workers.
+  - In "ms-swift<3.12", the default value is 10, which may cause out of memory issues.
+- train_dataloader_shuffle: Whether to shuffle the dataloader for CPT/SFT training, default is True. This parameter is ineffective for IterableDataset (i.e., it doesn't work for streaming datasets). IterableDataset reads data sequentially.
+- optim: The optimizer, defaults to `"adamw_torch"` (for torch>=2.8 `"adamw_torch_fused"`). For a complete list of optimizers, please see `OptimizerNames` in [training_args.py](https://github.com/huggingface/transformers/blob/main/src/transformers/training_args.py).
+- optim_args: Optional arguments to pass to the optimizer, defaults to None.
+- group_by_length: (ms-swift>=3.12) Whether to group samples with approximately the same length together in the training dataset (with a random factor) to minimize padding and ensure load balancing across nodes and processes for improved efficiency. Defaults to False. For the specific algorithm, refer to `transformers.trainer_pt_utils.get_length_grouped_indices`.
 - 🔥neftune_noise_alpha: Noise magnitude for NEFTune. Default is 0. Common values: 5, 10, 15.
 - 🔥use_liger_kernel: Whether to enable the [Liger](https://github.com/linkedin/Liger-Kernel) kernel to accelerate training and reduce GPU memory consumption. Defaults to False. Example shell script can be found [here](https://github.com/modelscope/ms-swift/blob/main/examples/train/liger).
   - Note: Liger kernel does not support `device_map`. Use DDP or DeepSpeed for multi-GPU training. Currently, liger_kernel only supports `task_type='causal_lm'`.
@@ -462,7 +476,8 @@ Training arguments include the [base arguments](#base-arguments), [Seq2SeqTraine
 - add_version: Add directory to output_dir with `'<version>-<timestamp>'` to prevent weight overwrite, default is True.
 - check_model: Check local model files for corruption or modification and give a prompt, default is True. **If in an offline environment, please set to False.**
 - 🔥create_checkpoint_symlink: Creates additional checkpoint symlinks to facilitate writing automated training scripts. The symlink paths for `best_model` and `last_model` are `f'{output_dir}/best'` and `f'{output_dir}/last'` respectively.
-- 🔥packing: Packs data samples of varying lengths into samples of uniform length, achieving load balancing across nodes and processes during training (preventing long texts from slowing down short text training), thereby improving GPU utilization and maintaining stable memory usage. When using `--attn_impl flash_attn`, it ensures that different sequences within packed samples remain independent and invisible to each other. This parameter defaults to `False` and currently supports CPT/SFT/DPO/KTO/GKD. Note: **packing will reduce the number of dataset samples, please adjust gradient accumulation steps and learning rate accordingly**.
+- 🔥packing: Use the `padding_free` method to pack data samples of different lengths into samples of **approximately** uniform length (packing ensures that complete sequences are not split), achieving load balancing across nodes and processes during training (preventing long texts from slowing down short text training), thereby improving GPU utilization and maintaining stable memory usage. When using `--attn_impl flash_attn`, it ensures that different sequences within packed samples remain independent and invisible to each other. This parameter defaults to `False` and currently supports CPT/SFT/DPO/KTO/GKD. Note: **packing will reduce the number of dataset samples, please adjust gradient accumulation steps and learning rate accordingly**.
+  - "ms-swift>=3.12" has newly added support for packing in embedding/reranker/seq_cls tasks.
 - packing_length: the length to use for packing. Defaults to None, in which case it is set to max_length.
 - packing_num_proc: Number of processes for packing, default is 1. Note that different values of `packing_num_proc` will result in different packed datasets. (This parameter does not take effect during streaming packing). Usually there is no need to modify this value, as packing speed is much faster than tokenization speed.
 - lazy_tokenize: Whether to use lazy tokenization. If set to `False`, all dataset samples will be tokenized (and for multimodal models, images will be loaded from disk) before training begins. Default is `None`: in LLM training, it defaults to `False`; in MLLM training, it defaults to `True` to save memory.
@@ -485,13 +500,14 @@ Training arguments include the [base arguments](#base-arguments), [Seq2SeqTraine
 
 #### SWANLAB
 
-- swanlab_token: SwanLab's API key
-- swanlab_project: SwanLab's project, which needs to be created in advance on the page: [https://swanlab.cn/space/~](https://swanlab.cn/space/~)
-- swanlab_workspace: Defaults to `None`, will use the username associated with the API key
-- swanlab_exp_name: Experiment name, can be left empty. If empty, the value of `--output_dir` will be used by default
-- swanlab_lark_webhook_url: Defaults to None. SwanLab's Lark webhook URL, used for pushing experiment results to Lark.
-- swanlab_lark_secret: Defaults to None. SwanLab's Lark secret, used for pushing experiment results to Lark.
-- swanlab_mode: Optional values are `cloud` and `local`, representing cloud mode or local mode
+- swanlab_token: The API key for SwanLab. You can also specify it using the `SWANLAB_API_KEY` environment variable.
+- swanlab_project: The SwanLab project, which can be created in advance on the page [https://swanlab.cn/space/~](https://swanlab.cn/space/~) or created automatically. The default is "ms-swift".
+- swanlab_workspace: Defaults to `None`, will use the username associated with the API key.
+- swanlab_exp_name: Experiment name, can be left empty. If empty, the value of `--output_dir` will be used by default.
+- swanlab_notification_method: The notification method for SwanLab when training completes or errors occur. For details, refer to [here](https://docs.swanlab.cn/plugin/notification-dingtalk.html). Supports 'dingtalk', 'lark', 'email', 'discord', 'wxwork', 'slack'.
+- swanlab_webhook_url: Defaults to None. The webhook URL corresponding to SwanLab's `swanlab_notification_method`.
+- swanlab_secret: Defaults to None. The secret corresponding to SwanLab's `swanlab_notification_method`.
+- swanlab_mode: Optional values are `cloud` and `local`, representing cloud mode or local mode.
 
 ### RLHF Arguments
 
@@ -527,6 +543,7 @@ RLHF arguments inherit from the [training arguments](#training-arguments).
 - seq_kd: Default is False. This parameter is used in GKD. It is the `seq_kd` parameter that controls whether to perform Sequence-Level KD (can be viewed as supervised fine-tuning on teacher-generated output).
   - Note: You can perform inference on the dataset using the teacher model in advance (accelerated by inference engines such as vLLM, SGLang, or lmdeploy), and set `seq_kd` to False during training. Alternatively, you can set `seq_kd` to True, which will use the teacher model to generate sequences during training (ensuring different generated data across multiple epochs, but at a slower efficiency).
 - offload_teacher_model: Whether to offload the teacher model to save GPU memory. If set to True, the teacher model will be loaded only during generate/logps computation. Default: False.
+- truncation_strategy: The method to handle inputs exceeding `max_length`. Supported values are `delete` and `left`, representing deletion and left-side truncation respectively. The default is `left`. With the delete strategy, over-long or encoding-failed samples are discarded, and new samples are resampled from the original dataset to maintain the intended batch size.
 - log_completions: Whether to log the model-generated content during training, to be used in conjunction with `--report_to wandb/swanlab`, default is False.
   - Note: If `--report_to wandb/swanlab` is not set, a `completions.jsonl` will be created in the checkpoint to store the generated content.
   - Log vLLM rollout results only.
@@ -571,13 +588,14 @@ The meanings of the following parameters can be referenced [here](https://huggin
 - generation_batch_size: Batch size to use for generation. It defaults to the effective training batch size: per_device_train_batch_size * num_processes * gradient_accumulation_steps`
 - steps_per_generation: Number of optimization steps per generation. It defaults to gradient_accumulation_steps. This parameter and generation_batch_size cannot be set simultaneously
 - num_generations: The number of samples generated per prompt (corresponding to the G value in the paper). The sampling batch size (generation_batch_size or steps_per_generation × per_device_batch_size × num_processes) must be divisible by num_generations. The default value is 8.
+- num_generations_eval: Number of generations to sample during evaluation. This allows using fewer generations during evaluation to save computation. If `None`, uses the value of `num_generations`. Default is None.
 - ds3_gather_for_generation: This parameter applies to DeepSpeed ZeRO-3. If enabled, the policy model weights are gathered for generation, improving generation speed. However, disabling this option allows training models that exceed the VRAM capacity of a single GPU, albeit at the cost of slower generation. Disabling this option is not compatible with vLLM generation. The default is True.
 - reward_funcs: Reward functions in the GRPO algorithm; options include `accuracy`,`format`,`cosine`,`repetition` and `soft_overlong`, as seen in `swift/plugin/orm.py`. You can also customize your own reward functions in the plugin. Default is `[]`.
 - reward_weights: Weights for each reward function. The number should be equal to the sum of the number of reward functions and reward models. If `None`, all rewards are weighted equally with weight `1.0`.
   - Note: If `--reward_model` is included in GRPO training, it is added to the end of the reward functions.
 - reward_model_plugin: The logic for the reward model, which defaults to ORM logic. For more information, please refer to [Customized Reward Models](./GRPO/DeveloperGuide/reward_model.md#custom-reward-model).
 - dataset_shuffle: Whether to shuffle the dataset randomly. Default is True.
-- truncation_strategy: The method to handle inputs exceeding `max_length`. Supported values are `delete` and `left`, representing deletion and left-side truncation respectively. The default is `left`. Note that for multi-modal models, left-side truncation may remove multi-modal tokens and cause a shape mismatch error during model forward. With the delete strategy, over-long or encoding-failed samples are discarded, and new samples are resampled from the original dataset to maintain the intended batch size.
+- truncation_strategy: The method to handle inputs exceeding `max_length`. Supported values are `delete` and `left`, representing deletion and left-side truncation respectively. The default is `left`. With the delete strategy, over-long or encoding-failed samples are discarded, and new samples are resampled from the original dataset to maintain the intended batch size.
 - loss_type: The type of loss normalization. Options are ['grpo', 'bnpo', 'dr_grpo', 'dapo', 'cispo', 'sapo'], default is 'grpo'. For details, refer to this [doc](./GRPO/DeveloperGuide/loss_types.md)
 - log_completions: Whether to log the model-generated content during training, to be used in conjunction with `--report_to wandb/swanlab`, default is False.
   - Note: If `--report_to wandb/swanlab` is not set, a `completions.jsonl` will be created in the checkpoint to store the generated content.
@@ -632,6 +650,8 @@ The hyperparameters for the reward function can be found in the [Built-in Reward
 - log_entropy: Logs the entropy values during training. The default is False. For more information, refer to the [documentation](./GRPO/GetStarted/GRPO.md#logged-metrics).
 - rollout_importance_sampling_mode: Training-inference mismatch correction mode. Options are `token_truncate`, `token_mask`, `sequence_truncate`, `sequence_mask`. Default is None (disabled). For details, refer to the [documentation](./GRPO/AdvancedResearch/training_inference_mismatch.md).
 - rollout_importance_sampling_threshold: Threshold for importance sampling weights, used for truncating or masking extreme weights. Default is 2.0.
+- log_rollout_offpolicy_metrics: Whether to log training-inference mismatch diagnostic metrics (KL, PPL, χ², etc.) when `rollout_importance_sampling_mode` is not set. When `rollout_importance_sampling_mode` is set, metrics are always logged. Default is False.
+- off_policy_sequence_mask_delta: Off-Policy Sequence Masking threshold from [DeepSeek-V3.2 paper](https://arxiv.org/abs/2512.02556). When set, computes `mean(old_policy_logps - policy_logps)` for each sequence. If this value exceeds the threshold AND the sequence has negative advantage, the sequence is masked out from loss computation. Default is None (disabled). For details, refer to the [documentation](./GRPO/AdvancedResearch/training_inference_mismatch.md#off-policy-sequence-masking).
 
 
 ##### Reward function parameters
@@ -892,3 +912,4 @@ The meanings of the following parameters can be found in the example code [here]
 - SWIFT_TIMEOUT: (ms-swift >= 3.10) If the multimodal dataset contains image URLs, this parameter controls the timeout for fetching images, defaulting to 20 seconds.
 - ROOT_IMAGE_DIR: (ms-swift>=3.8) The root directory for image (multimodal) resources. By setting this parameter, relative paths in the dataset can be interpreted relative to `ROOT_IMAGE_DIR`. By default, paths are relative to the current working directory.
 - SWIFT_SINGLE_DEVICE_MODE: (ms-swift>=3.10) Single device mode, valid values are "0"(default)/"1". In this mode, each process can only see one device.
+- SWIFT_PATCH_CONV3D: (ms-swift>=3.11.2) If using torch==2.9, you may encounter slow Conv3d performance issues. You can work around this problem by setting `SWIFT_PATCH_CONV3D=1`. For more details, see [this issue](https://github.com/modelscope/ms-swift/issues/7108).

@@ -146,7 +146,11 @@ register_model(
     ))
 
 
-def get_model_tokenizer_deepseek_v3_2(model_dir: str, *args, **kwargs):
+def get_model_tokenizer_deepseek_v3_2(model_dir: str,
+                                      model_info: ModelInfo,
+                                      model_kwargs: Dict[str, Any],
+                                      load_model: bool = True,
+                                      **kwargs):
 
     try:
         from transformers.models.deepseek_v32 import DeepseekV32ForCausalLM, DeepseekV32Config
@@ -155,9 +159,12 @@ def get_model_tokenizer_deepseek_v3_2(model_dir: str, *args, **kwargs):
         # while we wait for Transformers to support deepseek_v3_2.
         from transformers.models.deepseek_v3 import (DeepseekV3ForCausalLM as DeepseekV32ForCausalLM, DeepseekV3Config
                                                      as DeepseekV32Config)
+        if load_model and not kwargs.get('return_dummy_model'):
+            raise ValueError('DeepSeek-V3.2 is not supported in transformers.')
+
     kwargs['automodel_class'] = DeepseekV32ForCausalLM
     kwargs['model_config'] = DeepseekV32Config.from_pretrained(model_dir)
-    model, tokenizer = get_model_tokenizer_with_flash_attn(model_dir, *args, **kwargs)
+    model, tokenizer = get_model_tokenizer_with_flash_attn(model_dir, model_info, model_kwargs, load_model, **kwargs)
     return model, tokenizer
 
 
@@ -352,10 +359,25 @@ register_model(
     ))
 
 
-def get_model_tokenizer_deepseek_ocr(*args, **kwargs):
-    from transformers import AutoModel
-    kwargs['automodel_class'] = kwargs['automodel_class'] or AutoModel
-    model, tokenizer = get_model_tokenizer_with_flash_attn(*args, **kwargs)
+def get_model_tokenizer_deepseek_ocr(model_dir: str,
+                                     model_info: 'ModelInfo',
+                                     model_kwargs: Dict[str, Any],
+                                     load_model: bool = True,
+                                     **kwargs):
+    from transformers import AutoModel, AutoProcessor, AutoTokenizer
+    # When not loading model (e.g., vllm backend), avoid triggering AutoConfig which would execute
+    # trust_remote_code and cause transformers version compatibility issues
+    if not load_model:
+        # For vllm backend, we only need the processor/tokenizer
+        try:
+            processor = AutoProcessor.from_pretrained(model_dir, trust_remote_code=True)
+        except Exception:
+            # Fallback to AutoTokenizer if AutoProcessor is not available
+            processor = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+        return None, processor
+
+    kwargs['automodel_class'] = kwargs.get('automodel_class') or AutoModel
+    model, tokenizer = get_model_tokenizer_with_flash_attn(model_dir, model_info, model_kwargs, load_model, **kwargs)
     if model is not None:
         patch_output_clone(model.model.embed_tokens)
         patch_output_to_input_device(model.model.sam_model)

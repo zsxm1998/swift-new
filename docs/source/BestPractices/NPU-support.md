@@ -22,15 +22,23 @@
 ## 环境准备
 
 实验环境：8 * 昇腾910B3 64G
-
+### 环境安装
 ```shell
 # 创建新的 conda 虚拟环境（可选）
 conda create -n swift-npu python=3.10 -y
 conda activate swift-npu
 
+# 注意进行后续操作前要先 source 激活 CANN 环境
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+
 # 设置 pip 全局镜像（可选，加速下载）
 pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 pip install ms-swift -U
+
+# 使用源码安装
+git clone https://github.com/modelscope/ms-swift.git
+cd ms-swift
+pip install -e .
 
 # 安装 torch-npu
 pip install torch-npu decorator
@@ -40,7 +48,23 @@ pip install deepspeed
 # 如果需要使用 evaluation 功能，请安装以下包
 pip install evalscope[opencompass]
 
-# 如果需要使用 MindSpeed(Megatron-LM)，请按照下面引导安装必要依赖
+# 如果需要使用 vllm-ascend 进行推理，请安装以下包
+pip install vllm==0.11.0
+pip install vllm-ascend==0.11.0rc3
+```
+
+测试环境是否安装正确，NPU能否被正常加载：
+```python
+from transformers.utils import is_torch_npu_available
+import torch
+
+print(is_torch_npu_available())  # True
+print(torch.npu.device_count())  # 8
+print(torch.randn(10, device='npu:0'))
+```
+
+**如果需要使用 MindSpeed(Megatron-LM)，请按照下面引导安装必要依赖**
+```shell
 # 1. 获取并切换 Megatron-LM 至 core_v0.12.1 版本
 git clone https://github.com/NVIDIA/Megatron-LM.git
 cd Megatron-LM
@@ -59,16 +83,12 @@ export PYTHONPATH=$PYTHONPATH:<your_local_megatron_lm_path>
 export MEGATRON_LM_PATH=<your_local_megatron_lm_path>
 ```
 
-测试环境是否安装正确，NPU能否被正常加载：
-
-```python
-from transformers.utils import is_torch_npu_available
-import torch
-
-print(is_torch_npu_available())  # True
-print(torch.npu.device_count())  # 8
-print(torch.randn(10, device='npu:0'))
+执行如下命令验证 MindSpeed(Megatron-LM) 是否配置成功：
+```shell
+python -c "import mindspeed.megatron_adaptor; from swift.megatron.init import init_megatron_env; init_megatron_env(); print('✓ NPU环境下的Megatron-SWIFT配置验证成功！')"
 ```
+
+### 环境查看
 
 查看NPU的P2P连接，这里看到每个NPU都通过7条HCCS与其他NPU互联
 
@@ -261,7 +281,7 @@ ASCEND_RT_VISIBLE_DEVICES=0 swift infer \
 
 ## 部署
 
-NPU不支持使用vllm进行推理/部署加速, 但是可以使用原生pytorch进行部署.
+### 使用原生pytorch进行部署
 
 原始模型:
 
@@ -277,6 +297,42 @@ ASCEND_RT_VISIBLE_DEVICES=0 swift deploy --adapters xxx/checkpoint-xxx --max_new
 # merge-lora并推理
 ASCEND_RT_VISIBLE_DEVICES=0 swift export --adapters xx/checkpoint-xxx --merge_lora true
 ASCEND_RT_VISIBLE_DEVICES=0 swift deploy --model xxx/checkpoint-xxx-merged --max_new_tokens 2048
+```
+
+### 使用vLLM-ascend进行部署
+使用pypi进行安装：
+```shell
+# Install vllm-project/vllm. The newest supported version is v0.11.0.
+pip install vllm==0.11.0
+
+# Install vllm-project/vllm-ascend from pypi.
+pip install vllm-ascend==0.11.0rc3
+```
+原始模型：
+```shell
+ASCEND_RT_VISIBLE_DEVICES=0 swift deploy \
+    --model Qwen/Qwen2.5-7B-Instruct \
+    --infer_backend vllm \
+    --max_new_tokens 2048
+```
+
+LoRA微调后:
+
+```shell
+ASCEND_RT_VISIBLE_DEVICES=0 swift deploy \
+    --adapters xxx/checkpoint-xxx \
+    --infer_backend vllm \
+    --max_new_tokens 2048
+
+# merge-lora并推理
+ASCEND_RT_VISIBLE_DEVICES=0 swift export \
+    --adapters xx/checkpoint-xxx \
+    --merge_lora true
+
+ASCEND_RT_VISIBLE_DEVICES=0 swift deploy \
+    --model xxx/checkpoint-xxx-merged \
+    --infer_backend vllm \
+    --max_new_tokens 2048
 ```
 
 ## 支持现状
@@ -319,7 +375,6 @@ ASCEND_RT_VISIBLE_DEVICES=0 swift deploy --model xxx/checkpoint-xxx-merged --max
 | ---------------------- |
 | Liger-kernel           |
 | 量化/QLoRA相关         |
-| Megatron相关           |
 | 使用sglang作为推理引擎 |
 
 

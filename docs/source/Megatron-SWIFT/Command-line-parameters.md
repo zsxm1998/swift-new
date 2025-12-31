@@ -34,7 +34,7 @@
 - calculate_per_token_loss: 根据全局批次中的非填充token数量来对交叉熵损失进行缩放。默认为True。
   - 注意：该参数在rlhf训练或者`task_type`不等于'causal_lm'时，默认为False。
 - 🔥attention_backend: 使用的注意力后端 (flash、fused、unfused、local、auto)。默认为 flash。
-  - **注意：推荐flash_attn版本：2.7.4.post1/2.8.1**。在"ms-swift<3.7"的版本中，该参数的默认为'auto'。
+  - **注意：推荐flash_attn版本：2.8.3**。在"ms-swift<3.7"的版本中，该参数的默认为'auto'。
   - 如果安装'flash_attention_3'，`--attention_backend flash`则优先使用fa3。训练脚本参考[这里](https://github.com/modelscope/ms-swift/tree/main/examples/train/flash_attention_3)。多模态模型的vit部分要使用flash_attention_3，请设置`--attn_impl flash_attention_3`。
   - 有些模型可能不支持flash，你需要手动设置`--attention_backend unfused/fused --padding_free false`，例如：Llama4, GPT-OSS。
 - optimizer: 优化器类型，可选为'adam'、'sgd'。默认为adam。
@@ -53,6 +53,7 @@
 - seed: python、numpy、pytorch和cuda的随机种子，默认为42。
 - 🔥num_workers: dataloader的workers数量，默认为4。
   - 注意：若设置`--streaming true`，则设置为1。
+- no_data_sharding: 当`--train_dataloader_shuffle true`时对 train_dataloader 生效，默认为False。该参数控制数据集随机的范围。若设置为False，则先对数据集进行分片，然后对每个分片进行随机处理（略节约内存）；若设置为True，则先对数据集进行随机，再进行分片（更好的随机效果）。使用该参数需"ms-swift>=3.12"。
 - seq_length: 默认为None，即设置为`max_length`。对数据集长度进行限制建议使用“基本参数”中的`--max_length`控制，无需设置此参数。
 - use_cpu_initialization: 在cpu上初始化权重，默认为False。在进行HF和MCore权重转换时会被使用。通常不需要修改该值。
 - 🔥megatron_extra_kwargs: 额外需要透传入megatron的其他参数，使用json传递。默认为None。
@@ -84,9 +85,10 @@
   - 提示：你可以设置为一个很大的值来只保存最后一个检查点。
 - 🔥no_save_optim: 不保存optimizer，默认为False。在全参数训练时，可以显著降低存储时间。
 - 🔥no_save_rng: 不保存rng，默认为False。
-- 🔥load: 加载的checkpoint目录，默认None。
+- 🔥load: 加载的checkpoint目录，默认None。对于断点续训的介绍，请查看`--finetune`参数的介绍。
   - 注意：若未使用ms-swift提供的`swift export`进行权重转换，你需要额外设置`--model <hf-repo>`用于加载`config.json`配置文件。
-  - 对于断点续训的介绍，请查看`--finetune`参数的介绍。
+  - 注意：在"ms-swift>3.10"，支持直接加载和存储safetensors权重，参考[mcore-bridge文档](./Mcore-Bridge.md)。
+  - `--model`与`--load`的区别：`--model/--adapters/--ref_model/--ref_adapters`后加safetensors权重目录，`--load/--adapter_load/--ref_load/--ref_adapter_load`后加mcore权重目录。`--model/--adapters`不支持加载断点续训状态，因此在"ms-swift>=3.12"，若设置`--no_save_optim false`，将额外存储mcore权重格式用于断点续训，你需要使用`--load/--adapter_load`来加载断点续训的状态。
 - 🔥no_load_optim: 不载入optimizer，默认为False。
   - 注意：断点续训时，设置`--no_load_optim false`读取优化器状态通常比`--no_load_optim true`不读取优化器状态消耗更大的显存资源。
 - 🔥no_load_rng: 不载入rng，默认为False。
@@ -137,9 +139,10 @@
 - log_validation_ppl_to_tensorboard: 将验证困惑度写入tensorboard。默认为True。
 - log_memory_to_tensorboard: 将内存日志写入tensorboard。默认为True。
 - logging_level: 日志级别。默认为None。
-- wandb_project: wandb 项目名称。默认为''，即忽略wandb。
-- wandb_exp_name: wandb 实验名称。默认为''。
-- wandb_save_dir: 本地保存 wandb 结果的路径。默认为''。
+- report_to: (ms-swift>=3.12) 启用的日志后端。默认为None。可选项为'wandb'和'swanlab'。（tensorboard会一直启动）。登陆可以使用`WANDB_API_KEY`、`SWANLAB_API_KEY`环境变量。
+- wandb_project: wandb/swanlab 项目名称，取决于`report_to`。默认为'megatron-swift'。
+- wandb_exp_name: wandb/swanlab 实验名称。默认为`--save`的值。
+- wandb_save_dir: 本地保存 wandb/swanlab 结果的路径。默认为None，即存储在`f'{args.save}/wandb'`或`f'{args.save}/swanlab'`。
 
 **评估参数**:
 - 🔥eval_iters: 评估的迭代次数，默认为`-1`，根据验证数据集的数量设置合适的值。**若验证集数量少于global_batch_size，则不进行评估**。若使用流式数据集，该值需要手动设置。
@@ -267,8 +270,9 @@ lora训练：
 - use_rslora: 默认为`False`，是否使用`RS-LoRA`。
 
 **Mcore-Bridge参数**
-- 🔥load_safetensors: 默认为False，是否直接从safetensors加载权重。
-- 🔥save_safetensors: 默认为False，是否直接保存成safetensors权重。注意，若该参数设置为True，则不会存储优化器权重、随机数状态等断点续训内容。
+- 🔥load_safetensors: 该参数在"ms-swift>=3.12"将失效（之前版本默认为False），将根据优先级加载权重：若`--load`不存在，则加载safetensors权重`--model`；`--adapters`和`--adapter_load`等同理。
+  - 注意：在"ms-swift>=3.12"，为保持shell脚本兼容性，该参数被保留，但不再发挥任何作用。
+- 🔥save_safetensors: 默认为True，是否直接保存成safetensors权重。该参数在"ms-swift>=3.12"支持了对优化器权重、随机数状态等断点续训内容进行保存（额外存储mcore格式权重），使用`--no_save_optim`和`--no_save_rng`控制。断点续训时使用`--load/--adapter_load`参数加载mcore格式权重。
 - model: safetensors权重的model_id或者model_path。默认为None。
 - model_type: 模型类型。介绍参考[ms-swift命令行参数文档](../Instruction/Command-line-parameters.md)。
 - adapters: safetensors格式的LoRA增量权重的adapter_id或者adapter_path。默认为`[]`。
@@ -285,6 +289,7 @@ lora训练：
 Megatron训练参数继承自Megatron参数和基本参数（**与ms-swift共用dataset、template等参数，也支持ms-swift中的特定模型参数**）。基本参数的内容可以参考[这里](../Instruction/Command-line-parameters.md#基本参数)。此外还包括以下参数：
 
 - add_version: 在`save`上额外增加目录`'<版本号>-<时间戳>'`防止权重覆盖，默认为True。
+- check_model: 检查本地模型文件有损坏或修改并给出提示，默认为True。**如果是断网环境，请设置为False**。
 - padding_free: 将一个batch中的数据进行展平而避免数据padding，从而降低显存占用并加快训练。默认为True。
   - 若要自定义attention_mask，你可以设置`--padding_free false`。
   - 注意：**Megatron-SWIFT训练特性优先支持padding_free格式**，若非特殊情况，请勿修改该值。
@@ -295,7 +300,7 @@ Megatron训练参数继承自Megatron参数和基本参数（**与ms-swift共用
   - 提示：在日志中打印的"learning rate"为llm的学习率。
 - aligner_lr: 当训练多模态大模型时，该参数指定aligner的学习率，默认为None，等于learning_rate。
 - gradient_checkpointing_kwargs: 传入`torch.utils.checkpoint`中的参数。例如设置为`--gradient_checkpointing_kwargs '{"use_reentrant": false}'`。默认为None。该参数只对`vit_gradient_checkpointing`生效。
-- 🔥packing: 将不同长度的数据样本打包成统一长度的样本，实现训练时各节点与进程的负载均衡（避免长文本拖慢短文本的训练速度），从而提高GPU利用率，保持显存占用稳定。当使用 `--attention_backend flash` 时，可确保packed样本内的不同序列之间相互独立，互不可见（除Qwen3-Next，因为含有linear-attention）。该参数默认为`False`。Megatron-SWIFT的所有训练任务都支持该参数。注意：**packing会导致数据集样本数减少，请自行调节梯度累加数和学习率**。
+- 🔥packing: 使用`padding_free`的方式将不同长度的数据样本打包成**近似**统一长度的样本（packing能保证不对完整的序列进行切分），实现训练时各节点与进程的负载均衡（避免长文本拖慢短文本的训练速度），从而提高GPU利用率，保持显存占用稳定。当使用 `--attention_backend flash` 时，可确保packed样本内的不同序列之间相互独立，互不可见（除Qwen3-Next，因为含有linear-attention）。该参数默认为`False`。Megatron-SWIFT的所有训练任务都支持该参数。注意：**packing会导致数据集样本数减少，请自行调节梯度累加数和学习率**。
 - packing_length: packing的长度。默认为None，设置为max_length。
 - packing_num_proc: packing的进程数，默认为1。需要注意的是，不同的`packing_num_proc`，最终形成的packed数据集是不同的。（该参数在流式packing时不生效）。通常不需要修改该值，packing速度远快于tokenize速度。
 - streaming: 流式读取并处理数据集，默认False。（流式数据集的随机并不彻底，可能导致loss波动剧烈。）
@@ -310,11 +315,19 @@ Megatron训练参数继承自Megatron参数和基本参数（**与ms-swift共用
 - num_labels: 分类模型（即`--task_type seq_cls`）需要指定该参数。代表标签数量，默认为None。
 - problem_type: 分类模型（即`--task_type seq_cls`）需要指定该参数。可选为'regression', 'single_label_classification', 'multi_label_classification'。默认为None，若模型为 reward_model 或 num_labels 为1，该参数为'regression'，其他情况，该参数为'single_label_classification'。
 - 🔥save_strategy: 保存策略，可选项为'steps'和'epochs'。默认为'steps'。当设置为'epoch'时，'save_interval'和'eval_interval'都会强制设置为1，代表每个epoch存储权重，'save_retain_interval'可设置为整数，代表多少个epoch存储保留检查点。
+- dataset_shuffle: 是否对dataset进行随机操作。默认为True。
+  - 注意：**Megatron-SWIFT的随机包括两个部分**：数据集的随机，由`dataset_shuffle`控制；train_dataloader中的随机，由`train_dataloader_shuffle`控制。
+- train_dataloader_shuffle: 是否对train_dataloader使用随机，默认为True。该参数需"ms-swift>=3.12"。
+  - 在"ms-swift>3.12"，将不再对val_dataset进行随机操作。
+- dataloader_pin_memory: 默认为True。使用该参数需"ms-swift>=3.12"。
+- dataloader_persistent_workers: 默认为True。使用该参数需"ms-swift>=3.12"。
+- dataloader_prefetch_factor: 默认为2。使用该参数需"ms-swift>=3.12"。
+- 🔥group_by_length: (ms-swift>=3.12) 是否在训练数据集中将长度大致相同的样本分组在一起（有随机因素），以最小化填充并确保各节点与进程的负载均衡以提高效率。默认为False。具体算法参考`transformers.trainer_pt_utils.get_length_grouped_indices`。
 
 
 ## RLHF参数
 除了继承训练参数外，还支持以下参数：
-- 🔥rlhf_type: 默认为'dpo'。目前可选择为'dpo'、'grpo'、'kto'和'rm'。
+- 🔥rlhf_type: 默认为'dpo'。目前可选择为'dpo'、'grpo'、'kto'、'rm'和'gkd'。
 - loss_scale: 覆盖[基本参数](../Instruction/Command-line-parameters.md)中的loss_scale。默认为'last_round'。
 - calculate_per_token_loss: 覆盖Megatron参数，默认为False。
 
@@ -350,6 +363,7 @@ Megatron训练参数继承自Megatron参数和基本参数（**与ms-swift共用
 - steps_per_generation：每轮生成的优化步数，即采样批量大小相对global_batch_size的倍数，默认为1。
 - generation_batch_size: 采样批量大小，需要是global_batch_size的倍数，默认等于global_batch_size*steps_per_generation。
 - num_generations: 每个prompt采样的数量，论文中的G值，默认为8。
+- num_generations_eval: 评估阶段每个prompt采样的数量。允许在评估时使用较少的生成数量以节省计算资源。如果为 None，则使用 num_generations 的值。默认为 None。
 - reward_funcs: GRPO算法奖励函数，可选项为`accuracy`、`format`、`cosine`、`repetition`和`soft_overlong`，见swift/plugin/orm.py。你也可以在plugin中自定义自己的奖励函数。默认为`[]`。
 - reward_weights: 每个奖励函数的权重。必须与奖励函数和奖励模型的总数量匹配。默认为 None，即所有奖励的权重都相等，为`1.0`。
   - 提示：如果GRPO训练中包含`--reward_model`，则其加在奖励函数的最后位置。
@@ -386,8 +400,27 @@ Megatron训练参数继承自Megatron参数和基本参数（**与ms-swift共用
 - delta: [INTELLECT-2 tech report](https://huggingface.co/papers/2505.07291)中双侧 GRPO 上界裁剪值。若设置，建议大于 1 + epsilon。默认为None。
 - importance_sampling_level: 控制重要性采样比计算，可选项为 `token` 和 `sequence`，`token` 模式下保留原始的每个 token 的对数概率比，`sequence` 模式下则会对序列中所有有效 token 的对数概率比进行平均。[GSPO论文](https://arxiv.org/abs/2507.18071)中使用sequence级别计算来稳定训练，默认为`token`。
 - scale_rewards：指定奖励的缩放策略。可选值包括 `group`（按组内标准差缩放）、`batch`（按整个批次的标准差缩放）、`none`（不进行缩放）。在 ms-swift < 3.10 版本中，该参数为布尔类型，`true` 对应 `group`，`false` 对应 `none`。默认值与 `advantage_estimator` 绑定：`grpo` 对应 `group`，`rloo` 对应 `none`，`reinforce_plus_plus` 对应 `batch`。
+- rollout_importance_sampling_mode: 训推不一致校正模式，可选项为 `token_truncate`、`token_mask`、`sequence_truncate`、`sequence_mask`。默认为None，不启用校正。具体参考[文档](../Instruction/GRPO/AdvancedResearch/training_inference_mismatch.md)。
+- rollout_importance_sampling_threshold: 重要性采样权重的阈值，用于截断或屏蔽极端权重。默认为2.0。
+- log_rollout_offpolicy_metrics: 当 `rollout_importance_sampling_mode` 未设置时，是否记录训推不一致诊断指标（KL、PPL、χ²等）。当设置了 `rollout_importance_sampling_mode` 时，指标会自动记录。默认为False。
+- off_policy_sequence_mask_delta: Off-Policy Sequence Masking 阈值，来自 DeepSeek-V3.2 论文。当设置此值时，会计算每个序列的 `mean(old_policy_logps - policy_logps)`，若该值大于阈值且该序列的优势为负，则 mask 掉该序列不参与损失计算。默认为None，不启用。具体参考[文档](../Instruction/GRPO/AdvancedResearch/training_inference_mismatch.md#off-policy-sequence-masking)。
 
 内置奖励函数参数参考[文档](../Instruction/Command-line-parameters.md#奖励函数参数)
+
+### GKD参数
+- teacher_model: 教师模型的路径或模型 ID，必需参数。
+- teacher_model_type: 教师模型类型，默认为None，自动检测。
+- teacher_model_revision: 教师模型版本，默认为None。
+- beta: JSD 散度插值系数。0.0 代表 Forward KL，0.5 代表对称 JSD，1.0 代表 Reverse KL。默认为0.5。
+- lmbda: On-Policy 学习触发概率。0.0 代表纯 Off-Policy，1.0 代表纯 On-Policy。默认为0.5。
+- seq_kd: 是否使用教师生成的响应（Sequential KD），当前暂不支持。默认为False。
+- temperature: 用于采样和损失计算的温度参数。默认为0.9。
+- offload_teacher_model: 是否将教师模型卸载到 CPU 以节省 GPU 显存。默认为False。
+- sft_alpha: SFT 损失的混合系数，`loss = jsd_loss + sft_alpha * sft_loss`。当使用数据集响应（Off-Policy）时生效。默认为0。
+- max_completion_length: 生成时的最大 token 数。默认为512。
+- vllm_mode: 同 GRPO 参数，用于 On-Policy 生成。colocate 模式下在程序内部署 vLLM。
+  - 注意：On-Policy 生成需要启用 vLLM（`--use_vllm true --vllm_mode colocate/server`）。
+  - 当 `lmbda > 0` 但未启用 vLLM 时，将自动回退到 Off-Policy 模式。
 
 ## 导出参数
 这里介绍`megatron export`的参数（需"ms-swift>=3.10"），若要使用`swift export`导出命令，请参考[ms-swift命令行参数文档](../Instruction/Command-line-parameters.md#导出参数)。`megatron export`相比`swift export`，支持分布式和多机导出。Megatron导出参数继承自Megatron参数和基本参数。

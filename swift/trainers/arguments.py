@@ -46,7 +46,8 @@ class TrainArgumentsMixin:
         lr_scheduler_kwargs (Optional[Union[dict, str]]): Additional keyword arguments for the learning rate scheduler,
             passed as a JSON string or a dictionary. Defaults to None.
         report_to (List[str]): The list of integrations to report results to (e.g., 'tensorboard', 'wandb'). Defaults
-            to ['tensorboard'].
+            to ['tensorboard']. If you specify `--report_to wandb`, you can set the project name through `WANDB_PROJECT`
+            and specify the API KEY corresponding to your account through `WANDB_API_KEY`.
         dataloader_num_workers (Optional[int]): The number of subprocesses to use for data loading. Defaults to None.
         dataloader_persistent_workers (bool): If True, the data loader workers will not be shut down after a dataset
             has been consumed once. Defaults to False.
@@ -150,6 +151,8 @@ class TrainArgumentsMixin:
 
         def LigerForCausalLMLoss(hidden_states, *args, **kwargs):
             hidden_states = hidden_states.contiguous()
+            for key in ['cu_seq_lens_q', 'cu_seq_lens_k', 'max_length_q', 'max_length_k']:
+                kwargs.pop(key, None)
             return origin_LigerForCausalLMLoss(hidden_states, *args, **kwargs)
 
         loss_utils.LigerForCausalLMLoss = LigerForCausalLMLoss
@@ -176,6 +179,8 @@ class TrainArgumentsMixin:
             logger.info(f'Setting args.gradient_accumulation_steps: {self.gradient_accumulation_steps}')
         if self.lr_scheduler_kwargs:
             self.lr_scheduler_kwargs = json_parse_to_dict(self.lr_scheduler_kwargs)
+        if 'wandb' in self.report_to:
+            os.environ.setdefault('WANDB_PROJECT', 'ms-swift')
         if self.vit_gradient_checkpointing is None:
             self.vit_gradient_checkpointing = self.gradient_checkpointing
         if self.gradient_checkpointing_kwargs:
@@ -188,7 +193,7 @@ class TrainArgumentsMixin:
                 self.dataloader_num_workers = 1
             logger.info(f'Setting args.dataloader_num_workers: {self.dataloader_num_workers}')
         if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
-            self.dataloader_prefetch_factor = 10
+            self.dataloader_prefetch_factor = 2
         if self.eval_use_evalscope:
             try:
                 import evalscope
@@ -244,14 +249,6 @@ class SwiftArgumentsMixin(RLHFArgumentsMixin, TrainArgumentsMixin):
         local_repo_path (Optional[str]): Path to a local repository. Some models (e.g., deepseek-vl2) depend on a
             GitHub repo for loading. Using a local repo avoids network issues during 'git clone'. Defaults to None.
         galore_config (Optional[GaLoreConfig]): GaLore configuration. Defaults to None.
-        padding_side (Optional[str]): The padding side for training when batch_size >= 2. Can be 'left' or 'right'.
-            Defaults to 'right'.
-            Note: For inference with batch_size >= 2, only left padding is performed. PPO and GKD default to 'left'.
-        padding_free (Optional[bool]): Whether to flatten data within a batch to avoid padding, reducing VRAM usage
-            and speeding up training. Sequences within the same batch remain isolated. Defaults to False. Currently
-            supports CPT, SFT, DPO, GRPO, KTO, and GKD.
-            Note: It is recommended to use this with '--attn_impl flash_attn' and 'transformers>=4.44'. Compared to
-            packing, padding_free has no preprocessing overhead, but packing is faster and has more stable VRAM usage.
         task_type (Optional[str]): The type of task. Can be 'causal_lm', 'seq_cls', 'embedding', 'reranker', or
             'generative_reranker'. Defaults to 'causal_lm'. If set to 'seq_cls', you usually need to also set
             '--num_labels' and '--problem_type'.
@@ -264,8 +261,6 @@ class SwiftArgumentsMixin(RLHFArgumentsMixin, TrainArgumentsMixin):
     train_type: Optional[str] = None
     local_repo_path: Optional[str] = None
     galore_config: Optional[GaLoreConfig] = None
-    padding_side: Optional[str] = None
-    padding_free: Optional[bool] = None
     task_type: Optional[str] = None
     problem_type: Optional[str] = None
 
@@ -412,6 +407,10 @@ class RolloutTrainerArgumentsMixin(VllmArguments):
             Defaults to False.
         wandb_log_unique_prompts (Optional[bool]): Whether to log unique prompts to Weights & Biases for analysis
             during training. Defaults to None.
+        structured_outputs_regex (Optional[str]): A regular expression pattern for structured outputs (guided
+            decoding). When set, the model's generation is constrained to match the specified regex pattern. This is
+            useful for tasks requiring structured outputs like reasoning chains. Defaults to None (disabled).
+            Only effective when using vLLM backend (`use_vllm=True`).
     """
     # generation args
     top_k: int = 50
@@ -421,8 +420,9 @@ class RolloutTrainerArgumentsMixin(VllmArguments):
 
     # vllm
     use_vllm: bool = False
-    vllm_mode: Literal['server', 'colocate'] = 'colocate'
+    vllm_mode: Optional[Literal['server', 'colocate']] = None
     # internal vllm (colocate)
+    vllm_max_num_seqs: Optional[int] = None
     vllm_enable_prefix_caching: bool = True  # overwrite
     vllm_enable_lora: bool = False
     lora_rank: int = 8  # for vllm lora adapter
@@ -432,9 +432,11 @@ class RolloutTrainerArgumentsMixin(VllmArguments):
     vllm_server_port: List[int] = field(default_factory=lambda: [8000])
     vllm_server_timeout: float = 240.0
     vllm_client = None  # Not required to set, used for client instantiation
-    vllm_server_group_port: List[int] = field(default_factory=lambda: [51216])
+    vllm_server_group_port: Optional[List[int]] = None
     enable_flattened_weight_sync: bool = True
     async_generate: bool = False
+    # # structured outputs (guided decoding), only effective for vllm backend
+    structured_outputs_regex: Optional[str] = None
 
     sleep_level: int = 0
     move_model_batches: Optional[int] = None
@@ -526,6 +528,9 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
         steps_per_generation (Optional[int]): The number of optimization steps per generation round. Only
             one of `steps_per_generation` and `generation_batch_size` can be set. Defaults to
             `gradient_accumulation_steps`.
+        num_generations_eval (Optional[int]): Number of generations to sample during evaluation. This allows
+            using fewer generations during evaluation to save computation. If `None`, uses the value of
+            `num_generations`. Defaults to None.
         dataset_shuffle (Optional[bool]): Whether to shuffle the dataset. Defaults to True.
         rollout_importance_sampling_mode (Optional[Literal['token_truncate', 'token_mask', 'sequence_truncate',
             'sequence_mask']]): The training-pull inconsistency correction mode. Options are `token_truncate`,
@@ -533,6 +538,9 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
             See the documentation for details.
         rollout_importance_sampling_threshold (float): The threshold for importance sampling weights, used to truncate
             or mask extreme weights. Defaults to 2.0.
+        log_rollout_offpolicy_metrics (bool): Whether to log rollout off-policy diagnostic metrics (KL, PPL, chi2, etc.)
+            when `rollout_importance_sampling_mode` is not set. When `rollout_importance_sampling_mode` is set,
+            metrics are always logged regardless of this setting. Defaults to False.
     """
     epsilon: float = 0.2
     epsilon_high: Optional[float] = None
@@ -616,6 +624,7 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
 
     generation_batch_size: Optional[int] = None
     steps_per_generation: Optional[int] = None
+    num_generations_eval: Optional[int] = None
 
     # dataset
     dataset_shuffle: Optional[bool] = True
@@ -625,6 +634,16 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     rollout_importance_sampling_mode: Optional[Literal['token_truncate', 'token_mask', 'sequence_truncate',
                                                        'sequence_mask']] = None
     rollout_importance_sampling_threshold: float = 2.0  # Threshold for truncation/masking (C in paper)
+    log_rollout_offpolicy_metrics: bool = False  # Log off-policy metrics even when IS correction is disabled
+    # Off-Policy Sequence Masking: mask out sequences that deviate too much from rollout policy
+    # If set, compute mean(rollout_per_token_logps - per_token_logps) per sequence,
+    # and mask sequences where this delta > threshold AND advantage < 0
+    # Falls back to old_per_token_logps if rollout_per_token_logps is not available
+    off_policy_sequence_mask_delta: Optional[float] = None
+
+    def __post_init__(self):
+        self.corrupt_image_kwargs = json_parse_to_dict(self.corrupt_image_kwargs)
+        super().__post_init__()
 
     def __post_init__(self):
         self.corrupt_image_kwargs = json_parse_to_dict(self.corrupt_image_kwargs)

@@ -1,6 +1,20 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
 # Code partially sourced from Hugging Face TRL
 
+# fmt: off
+# apply patch before importing trl, which may internally reference GuidedDecodingParams
+try:
+    import vllm
+    try:
+        from vllm.sampling_params import GuidedDecodingParams
+    except ImportError:
+        import vllm.sampling_params
+        # removed in https://github.com/vllm-project/vllm/pull/22772
+        vllm.sampling_params.GuidedDecodingParams = vllm.sampling_params.StructuredOutputsParams
+except ImportError:
+    pass
+# fmt: on
+
 import asyncio
 import inspect
 import multiprocessing
@@ -78,7 +92,7 @@ class WeightSyncWorkerExtension(HFWeightSyncWorkerExtension):
 
         dtype = getattr(torch, dtype.split('.')[-1])
         # Allocate memory for the incoming weight tensor on the correct device.
-        weight = torch.empty(shape, dtype=dtype, device=self.device)
+        weight = torch.empty(shape, dtype=dtype, device=self._comm.device)
 
         # Use NCCL to broadcast the updated weights from the client (src) to all workers.
         self._comm.broadcast(weight, src=self.client_rank)
@@ -96,7 +110,7 @@ class WeightSyncWorkerExtension(HFWeightSyncWorkerExtension):
             raise RuntimeError('Communicator not initialized. Call `init_communicator` first.')
         flatten_tensor_length = metadatas[-1].end_idx
         dtype = getattr(torch, metadatas[-1].dtype.split('.')[-1])
-        flatten_tensor = torch.empty(flatten_tensor_length, dtype=dtype, device=self.device)
+        flatten_tensor = torch.empty(flatten_tensor_length, dtype=dtype, device=self._comm.device)
         self._comm.broadcast(flatten_tensor, src=self.client_rank)
         self._comm.group.barrier()
         flattened_tensor_bucket = FlattenedTensorBucket(metadata=metadatas, flattened_tensor=flatten_tensor)
@@ -128,7 +142,7 @@ class WeightSyncWorkerExtension(HFWeightSyncWorkerExtension):
             name = metadata['name']
             dtype = getattr(torch, metadata['dtype'].split('.')[-1])
             shape = tuple(metadata['shape'])
-            tensor = torch.empty(shape, dtype=dtype, device=self.device)
+            tensor = torch.empty(shape, dtype=dtype, device=self._comm.device)
             self._comm.broadcast(tensor, src=self.client_rank)
             named_params[name] = tensor
 
@@ -155,7 +169,7 @@ class WeightSyncWorkerExtension(HFWeightSyncWorkerExtension):
 
         flatten_tensor_length = metadatas[-1].end_idx
         dtype = getattr(torch, metadatas[-1].dtype.split('.')[-1])
-        flatten_tensor = torch.empty(flatten_tensor_length, dtype=dtype, device=self.device)
+        flatten_tensor = torch.empty(flatten_tensor_length, dtype=dtype, device=self._comm.device)
 
         self._comm.broadcast(flatten_tensor, src=self.client_rank)
         self._comm.group.barrier()
@@ -380,7 +394,9 @@ class SwiftRolloutDeploy(SwiftPipeline):
         engine_kwargs = kwargs.get('engine_kwargs', {})
         # for RL rollout model weight sync
         engine_kwargs.update({'worker_extension_cls': 'swift.llm.infer.rollout.WeightSyncWorkerExtension'})
-        engine_kwargs['load_format'] = 'dummy'
+        # Use load_format from engine_kwargs if provided, otherwise default to 'dummy'
+        if 'load_format' not in engine_kwargs:
+            engine_kwargs['load_format'] = 'dummy'
         if args.vllm_use_async_engine and args.vllm_data_parallel_size > 1:
             engine_kwargs['data_parallel_size'] = args.vllm_data_parallel_size
         kwargs['engine_kwargs'] = engine_kwargs

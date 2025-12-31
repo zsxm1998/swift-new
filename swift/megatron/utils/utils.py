@@ -175,11 +175,11 @@ def prepare_adapter(model):
     with _patch_deepcopy():
         model = Swift.prepare_model(model, lora_config)
     if args.ref_adapter_load or args.ref_adapters:
-        lora_config = deepcopy(lora_config)
-        lora_config.inference_mode = True
-        with _patch_deepcopy():
-            model.add_adapter('ref_adapter', lora_config)
+        model.add_adapter('ref_adapter', lora_config)
         model.base_model._cast_adapter_dtype(adapter_name='ref_adapter', autocast_adapter_dtype=True)
+        for n, p in model.named_parameters():
+            if '.ref_adapter.' in n:
+                p.requires_grad = False
     return model
 
 
@@ -208,6 +208,8 @@ def adapter_state_dict_context(is_peft_format: bool = True):
 
     def generate_state_dict(args, model, *_args, **kwargs):
         state_dict = _origin_generate_state_dict(args, model, *_args, **kwargs)
+        if 'model' not in state_dict:
+            return state_dict
         new_state_dict = {}
         state_dict_model = state_dict['model']
         for n, p in model[0].named_parameters():
@@ -285,6 +287,8 @@ def forward_step_helper(model, inputs, dtype=None):
     args = get_args()
     if mpu.is_pipeline_first_stage():
         micro_batch_size = 1  # use qkv_format 'thd'
+        if not args.padding_free:
+            micro_batch_size = args.micro_batch_size
         seq_length = inputs['position_ids'].shape[-1]
         if args.sequence_parallel:
             seq_length //= mpu.get_tensor_model_parallel_world_size()
@@ -342,3 +346,45 @@ def get_local_layer_specs(config, layer_specs, vp_stage=None):
         offset = get_transformer_layer_offset(config, **kwargs)
         local_layer_specs = layer_specs[offset:offset + num_layers_to_build]
     return local_layer_specs
+
+
+class MegatronTrainerState:
+    """
+    A lightweight trainer state class for Megatron training, providing compatibility
+    with transformers TrainerState interface.
+
+    This class allows reward functions to access training progress information
+    (current step and total steps) in the same way as they would with
+    transformers Trainer.
+
+    Attributes:
+        global_step (int): The current training step (number of update steps completed).
+        max_steps (int): The total number of training steps.
+    """
+
+    def __init__(self, global_step: int = 0, max_steps: int = 0):
+        """
+        Initialize MegatronTrainerState.
+
+        Args:
+            global_step: The current training step. Defaults to 0.
+            max_steps: The total number of training steps. Defaults to 0.
+        """
+        self.global_step = global_step
+        self.max_steps = max_steps
+
+    def update(self, global_step: Optional[int] = None, max_steps: Optional[int] = None):
+        """
+        Update the trainer state.
+
+        Args:
+            global_step: The current training step. If None, keeps the current value.
+            max_steps: The total number of training steps. If None, keeps the current value.
+        """
+        if global_step is not None:
+            self.global_step = global_step
+        if max_steps is not None:
+            self.max_steps = max_steps
+
+    def __repr__(self) -> str:
+        return f'MegatronTrainerState(global_step={self.global_step}, max_steps={self.max_steps})'

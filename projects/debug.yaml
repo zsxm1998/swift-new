@@ -1,0 +1,77 @@
+# PAPO args
+corrupt_image: cgpo_v2
+corrupt_image_kwargs:
+  fill_type: local_mean
+corrupt_image_position: completion
+kl_prcp_coef: 0.02
+kl_prcp_reference: current
+corrupt_entropy_loss_coef: 0.0
+entropy_loss_coef: 0.0
+entropy_loss_type: sampled
+
+# model args
+add_version: false
+model: outputs/PathVerse/RSN_LOC_0108#R128A256E2
+output_dir: outputs/debug
+torch_dtype: bfloat16
+attn_impl: flash_attn
+freeze_vit: false
+freeze_aligner: false
+
+# data args
+dataset: 
+  - 'projects/PathVerse/dataset/nips/3_rft/02_thumbnail_choice_rsn_loc.json'
+  - 'projects/PathVerse/dataset/nips/3_rft/07_private_patch_choice_rsn_loc.json'
+dataset_num_proc: 8
+load_from_cache_file: true
+dataloader_num_workers: 4
+max_length: 4096 # 在GRPO时代表max_prompt_length；PAPO代码中设置为4096
+
+# train args
+train_type: full
+#deepspeed: zero3_offload
+gradient_checkpointing: true
+num_train_epochs: 2
+per_device_train_batch_size: 1
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 6
+learning_rate: 1e-6
+weight_decay: 0.01
+warmup_ratio: 0.0
+
+# log, val and save args
+logging_steps: 1
+save_strategy: steps
+save_steps: 150
+save_total_limit: 2
+save_only_model: false
+report_to: tensorboard
+
+# rlhf args
+rlhf_type: grpo
+loss_type: grpo
+num_generations: 2
+steps_per_generation: 6
+beta: 0.01
+epsilon_high: 0.3 # PAPO用的EasyR1中默认为0.3
+num_iterations: 1
+reward_funcs: [papo_accuracy, papo_format]
+reward_weights: ['0.9', '0.1'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+external_plugins: [projects/baselines/PAPO/reward_function.py]
+log_completions: true
+log_entropy: true
+
+# rollout args
+use_vllm: false
+vllm_max_model_len: 32768
+vllm_gpu_memory_utilization: 0.3
+vllm_tensor_parallel_size: 1
+vllm_enforce_eager: false # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置。不用设置，改成配置compilation_config了
+vllm_engine_kwargs:
+  max_num_batched_tokens: 4096
+  compilation_config:
+    mode: "none"
+sleep_level: 1
+max_completion_length: 2048
+temperature: 1.0
+top_p: 0.99

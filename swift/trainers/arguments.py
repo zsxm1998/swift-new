@@ -600,7 +600,7 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     kl_in_reward: Optional[bool] = None  # rloo/reinforce_plus_plus: true, grpo: false (default)
 
     # For PAPO, VPPO, ToR
-    corrupt_image: Optional[Literal['no_image', 'random_patch']] = None
+    corrupt_image: Optional[Literal['no_image', 'random_patch', 'cgpo_v1', 'cgpo_v2']] = None
     corrupt_image_kwargs: Optional[Union[dict, str]] = None
     corrupt_image_position: Literal['prompt', 'completion'] = 'prompt'
     # PAPO
@@ -640,10 +640,6 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     # and mask sequences where this delta > threshold AND advantage < 0
     # Falls back to old_per_token_logps if rollout_per_token_logps is not available
     off_policy_sequence_mask_delta: Optional[float] = None
-
-    def __post_init__(self):
-        self.corrupt_image_kwargs = json_parse_to_dict(self.corrupt_image_kwargs)
-        super().__post_init__()
 
     def __post_init__(self):
         self.corrupt_image_kwargs = json_parse_to_dict(self.corrupt_image_kwargs)

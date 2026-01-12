@@ -1,6 +1,6 @@
 # model args
-model: outputs/PathVerse/1_sft/qwen2-vl-7b-base_0625+rsn-0108_full_VAL_2/v0-20260108-051100/checkpoint-11270
-output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#SFT
+model: /c22073/codes/ms-swift/zsxm_checkpoint/nips/4_expe/qwen2-vl-7b-base_0625#grpo#Entropy_Verify_bs128#v4#RSN_LOC_0108#R128A256E2/v0-20260109-190652/checkpoint-500-merged
+output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#GRPO
 torch_dtype: bfloat16
 attn_impl: flash_attn
 freeze_vit: true
@@ -24,13 +24,14 @@ save_total_limit: 2
 save_only_model: false
 report_to: swanlab
 swanlab_project: CGPO
-swanlab_exp_name: 01Baseline#SFT_GRPO_only-base-format
+swanlab_exp_name: 01Baseline_GRPO_only-base-format_beta=0.001_entropy=0.06
 
 # train args
 train_type: full
 deepspeed: zero3
 gradient_checkpointing: true
 learning_rate: 1e-6
+lr_scheduler_type: constant
 weight_decay: 0.01
 warmup_ratio: 0.0
 num_train_epochs: 2
@@ -44,7 +45,7 @@ steps_per_generation: 96
 num_generations: 8
 rlhf_type: grpo
 loss_type: grpo
-beta: 0.04
+beta: 0.001
 epsilon_high: 0.2
 num_iterations: 1
 reward_funcs: [cgpo_format, cgpo_accuracy]
@@ -52,6 +53,8 @@ reward_weights: ['0.2', '0.8'] # 注意这里必须是字符串形式，否则ya
 external_plugins: [projects/PathVerse/plugin/cgpo_orm.py]
 log_completions: true
 log_entropy: true
+entropy_loss_coef: 0.06
+entropy_loss_type: sampled
 
 # rollout args
 use_vllm: true

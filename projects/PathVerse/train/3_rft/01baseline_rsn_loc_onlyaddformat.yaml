@@ -1,5 +1,5 @@
 # model args
-model: /c22073/codes/ms-swift/zsxm_checkpoint/nips/4_expe/qwen2-vl-7b-base_0625#grpo#Entropy_Verify_bs128#v4#RSN_LOC_0108#R128A256E2/v0-20260109-190652/checkpoint-500-merged
+model: outputs/PathVerse/RSN_LOC_0108#R128A256E2
 output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#GRPO_only-RSN-LOC-format
 torch_dtype: bfloat16
 attn_impl: flash_attn
@@ -24,7 +24,7 @@ save_total_limit: 2
 save_only_model: false
 report_to: swanlab
 swanlab_project: CGPO
-swanlab_exp_name: 01Baseline_GRPO_only-RSN-LOC-format
+swanlab_exp_name: 01Baseline_GRPO_only-RSN-LOC-format_beta=0.001_entropy=0.03
 
 # train args
 train_type: full
@@ -53,7 +53,7 @@ reward_weights: ['0.2', '0.8'] # 注意这里必须是字符串形式，否则ya
 external_plugins: [projects/PathVerse/plugin/cgpo_orm.py]
 log_completions: true
 log_entropy: true
-entropy_loss_coef: 0.06
+entropy_loss_coef: 0.03
 entropy_loss_type: sampled
 
 # rollout args

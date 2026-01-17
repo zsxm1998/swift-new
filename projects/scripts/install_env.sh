@@ -91,7 +91,7 @@ pip install "sglang==0.5.6" --no-deps
 pip install -e ".[all]"
 #这是sglang的依赖pip install anthropic>=0.20.0 blobfile==3.0.0 build cuda-python decord2 flashinfer_cubin==0.5.3 flashinfer_python==0.5.3 grpcio-health-checking==1.75.1 grpcio-reflection==1.75.1 grpcio-tools==1.75.1 hf_transfer nvidia-cutlass-dsl==4.2.1 outlines==0.1.11 py-spy setproctitle sgl-kernel==0.3.18.post2 torch_memory_saver==0.0.9 torchao==0.9.0 torchcodec==0.7.0
 pip install timm deepspeed==0.17.6
-pip install qwen_vl_utils qwen_omni_utils keye_vl_utils decord librosa icecream soundfile liger_kernel nvitop pre-commit math_verify py-spy wandb swanlab mathruler -U
+pip install qwen_vl_utils qwen_omni_utils keye_vl_utils decord librosa icecream soundfile liger_kernel nvitop pre-commit math_verify py-spy wandb swanlab mathruler shapely -U
 # 源码安装flash-attn==2.8.3
 git clone -b v2.8.3 --single-branch https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention

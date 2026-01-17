@@ -1,0 +1,17 @@
+# 对于wandb
+1. 程序开始前的环境变量设置：WANDB_RUN_ID=中断的run_id(例如sxtaktuv) WANDB_RESUME=must
+2. 其他控制台参数不变，增加：
+--resume_from_checkpoint 要恢复的路径，结尾是checkpoint-250这种 \
+--add_version False \
+然后把--output_dir设置为增加带version的路径，即最后的是v1-20250715-202507这种，使ckpt生成在原来位置
+3. 运行训练脚本
+
+# 对于swanlab
+1. 设置 SWANLAB_RESUME=must SWANLAB_RUN_ID=[要恢复的实验的id]
+2. 其他控制台参数不变，增加：
+--resume_from_checkpoint 要恢复的路径，结尾是checkpoint-250这种 \
+--add_version False \
+然后把--output_dir设置为增加带version的路径，即最后的是v1-20250715-202507这种，使ckpt生成在原来位置
+3. 运行训练脚本
+
+SWANLAB_RESUME=must SWANLAB_RUN_ID=th3igev8kz5behls0k78r bash projects/PathVerse/train/3_rft/baseline.sh -c projects/PathVerse/train/3_rft/04ToR_rsn_loc.yaml -g 0,1,2,3,4,5,6,7 -r outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#ToR/v0-20260114-025646/checkpoint-90

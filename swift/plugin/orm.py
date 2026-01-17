@@ -1,8 +1,9 @@
 import os
 import re
-from typing import TYPE_CHECKING, Dict, List, Union
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 import json
+from mathruler.grader import extract_boxed_content
 
 if TYPE_CHECKING:
     from swift.llm import InferRequest
@@ -21,6 +22,170 @@ class ORM:
 
     def __call__(self, **kwargs) -> List[float]:
         raise NotImplementedError
+
+
+def extract_choice_label(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    candidates = []
+    boxed = extract_boxed_content(text)
+    if boxed and boxed != 'None':
+        candidates.append((boxed, True))
+    candidates.append((text, False))
+    for cand, from_boxed in candidates:
+        if cand is None:
+            continue
+        normalized = cand.replace('\n', ' ').strip()
+        answer = re.search(
+            r'(?i)\b(?:answer|option|choice)\b\s*[:\-]?\s*[\(\[]?\s*([A-H])\s*[\)\]]?\b',
+            normalized,
+        )
+        if answer:
+            return answer.group(1).upper()
+        leading = re.search(r'^\s*[\(\[]?\s*([A-H])\s*[\)\]]?\s*[\.\)\:]\s+', normalized)
+        if leading:
+            return leading.group(1).upper()
+        if from_boxed:
+            latex_text = re.search(r'\\text\{\s*[\(\[]?\s*([A-H])\s*[\)\]]?\s*\}', normalized)
+            if latex_text:
+                return latex_text.group(1).upper()
+            paren = re.search(r'[\(\[]\s*([A-H])\s*[\)\]]', normalized)
+            if paren:
+                return paren.group(1).upper()
+        direct = re.search(r'^\s*[\(\[]?\s*([A-H])\s*[\)\]]?\s*$', normalized)
+        if direct:
+            return direct.group(1).upper()
+    return None
+
+
+def extract_yes_no(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    candidates = []
+    boxed = extract_boxed_content(text)
+    if boxed and boxed != 'None':
+        candidates.append((boxed, True))
+    candidates.append((text, False))
+    for cand, from_boxed in candidates:
+        if cand is None:
+            continue
+        normalized = cand.replace('\n', ' ').strip().lower()
+        answer = re.search(r'\banswer\b\s*[:\-]?\s*(yes|no)\b', normalized)
+        if answer:
+            return answer.group(1)
+        direct = re.fullmatch(r'(yes|no)', normalized)
+        if direct:
+            return direct.group(1)
+        leading = re.search(r'^\s*(yes|no)\b', normalized)
+        if leading:
+            return leading.group(1)
+        if from_boxed:
+            latex_clean = normalized
+            latex_clean = re.sub(r'\\(text|mathrm|mathbf|mathit|mathtt)\{([^}]*)\}', r'\2', latex_clean)
+            latex_clean = re.sub(r'[{}$]', '', latex_clean)
+            latex_clean = re.sub(r'[^a-z]+', ' ', latex_clean).strip()
+            if latex_clean in {'yes', 'no'}:
+                return latex_clean
+            paren = re.search(r'[\(\[]\s*(yes|no)\s*[\)\]]', normalized)
+            if paren:
+                return paren.group(1)
+    return None
+
+
+def is_yes_no_correct(prediction: str, ground_truth: str) -> Optional[bool]:
+    gt = extract_yes_no(ground_truth)
+    if not gt:
+        return None
+    pred = extract_yes_no(prediction)
+    return pred == gt
+
+
+def _normalize_plain_text(text: str) -> str:
+    lowered = text.lower()
+    lowered = re.sub(r'\\(text|mathrm|mathbf|mathit|mathtt)\{([^}]*)\}', r'\2', lowered)
+    lowered = re.sub(r'[{}$]', '', lowered)
+    lowered = re.sub(r'[^a-z]+', ' ', lowered)
+    return re.sub(r'\s+', ' ', lowered).strip()
+
+
+def extract_boxed_plain_text(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    boxed = extract_boxed_content(text)
+    if not boxed or boxed == 'None':
+        return None
+    normalized = _normalize_plain_text(boxed)
+    if not normalized:
+        return None
+    return normalized
+
+
+def is_simple_text_correct(prediction: str, ground_truth: str) -> Optional[bool]:
+    if not ground_truth:
+        return None
+    if re.search(r'[\\0-9]', ground_truth):
+        return None
+    if not re.search(r'[A-Za-z]', ground_truth):
+        return None
+    if not re.fullmatch(r"[A-Za-z\s\.\,\;\:\!\?\'\"\-]+", ground_truth):
+        return None
+    gt_norm = _normalize_plain_text(ground_truth)
+    if not gt_norm:
+        return None
+    if len(gt_norm.split()) > 6:
+        return None
+    pred_norm = extract_boxed_plain_text(prediction)
+    if not pred_norm:
+        return None
+    return pred_norm == gt_norm
+
+
+def extract_colon_value(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    candidates = []
+    boxed = extract_boxed_content(text)
+    if boxed and boxed != 'None':
+        candidates.append(boxed)
+    candidates.append(text)
+    def _normalize_colon(val: str) -> str:
+        return re.sub(r'\s+', '', val)
+
+    time_pattern = r'([0-9]+\s*:\s*[0-9]+)\s*(a\.?m\.?|p\.?m\.?)?'
+    for cand in candidates:
+        if cand is None:
+            continue
+        normalized = cand.replace('\n', ' ').strip()
+        answer = re.search(rf'(?i)\banswer\b\s*[:\-]?\s*{time_pattern}\b', normalized)
+        if answer:
+            suffix = (answer.group(2) or '').replace('.', '').lower()
+            return f"{_normalize_colon(answer.group(1))}{suffix}"
+        full = re.fullmatch(rf'\s*{time_pattern}\s*', normalized, re.IGNORECASE)
+        if full:
+            suffix = (full.group(2) or '').replace('.', '').lower()
+            return f"{_normalize_colon(full.group(1))}{suffix}"
+        if boxed and cand == boxed:
+            paren = re.search(rf'[\(\[]\s*{time_pattern}\s*[\)\]]', normalized, re.IGNORECASE)
+            if paren:
+                suffix = (paren.group(2) or '').replace('.', '').lower()
+                return f"{_normalize_colon(paren.group(1))}{suffix}"
+    return None
+
+
+def is_colon_value_correct(prediction: str, ground_truth: str) -> Optional[bool]:
+    gt = extract_colon_value(ground_truth)
+    if not gt:
+        return None
+    pred = extract_colon_value(prediction)
+    return pred == gt
+
+
+def is_multiple_choice_correct(prediction: str, ground_truth: str) -> Optional[bool]:
+    gt_choice = extract_choice_label(ground_truth)
+    if not gt_choice:
+        return None
+    pred_choice = extract_choice_label(prediction)
+    return pred_choice == gt_choice
 
 
 class AsyncORM:
@@ -218,12 +383,16 @@ class MathORM(ORM):
 
     @staticmethod
     def extract_boxed_result(text):
-        pattern = r'\\boxed{([^}]*)}'
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1).strip()
-        else:
+        # pattern = r'\\boxed{([^}]*)}'
+        # match = re.search(pattern, text)
+        # if match:
+        #     return match.group(1).strip()
+        # else:
+        #     return text
+        res = extract_boxed_content(text)
+        if res == 'None':
             return text
+        return res
 
     @staticmethod
     def clean_latex(latex_str):
@@ -245,6 +414,8 @@ class MathORM(ORM):
     def compare_consecutive(first, second):
         cleaned_list = [MathORM.clean_latex(latex) for latex in [first, second]]
         parsed_exprs = [MathORM.parse_expression(latex) for latex in cleaned_list]
+        if any(expr is None for expr in parsed_exprs):
+            return False
         if hasattr(parsed_exprs[0], 'equals') and hasattr(parsed_exprs[1], 'equals'):
             value = parsed_exprs[0].equals(parsed_exprs[1])
         else:
@@ -264,6 +435,22 @@ class MathORM(ORM):
                 ground_truth = ground_truth.split('# Answer')[1]
             prediction = prediction.strip()
             ground_truth = ground_truth.strip()
+            yes_no_match = is_yes_no_correct(prediction, ground_truth)
+            if yes_no_match is not None:
+                rewards.append(float(yes_no_match))
+                continue
+            colon_match = is_colon_value_correct(prediction, ground_truth)
+            if colon_match is not None:
+                rewards.append(float(colon_match))
+                continue
+            choice_match = is_multiple_choice_correct(prediction, ground_truth)
+            if choice_match is not None:
+                rewards.append(float(choice_match))
+                continue
+            simple_match = is_simple_text_correct(prediction, ground_truth)
+            if simple_match is not None:
+                rewards.append(float(simple_match))
+                continue
             prediction = MathORM.extract_boxed_result(prediction)
             ground_truth = MathORM.extract_boxed_result(ground_truth)
             if self.use_opencompass:
@@ -287,6 +474,22 @@ class MathAccuracy(ORM):
         from math_verify import LatexExtractionConfig, parse, verify
         rewards = []
         for content, sol in zip(completions, solution):
+            yes_no_match = is_yes_no_correct(content, sol)
+            if yes_no_match is not None:
+                rewards.append(float(yes_no_match))
+                continue
+            colon_match = is_colon_value_correct(content, sol)
+            if colon_match is not None:
+                rewards.append(float(colon_match))
+                continue
+            choice_match = is_multiple_choice_correct(content, sol)
+            if choice_match is not None:
+                rewards.append(float(choice_match))
+                continue
+            simple_match = is_simple_text_correct(content, sol)
+            if simple_match is not None:
+                rewards.append(float(simple_match))
+                continue
             content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
             content_to_parse = content_match.group(1).strip() if content_match else content
             has_answer_tag = content_match is not None

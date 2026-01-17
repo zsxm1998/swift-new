@@ -1,6 +1,17 @@
+# VPPO args: 熵损失放在了下面的rlhf args且固定不动
+corrupt_image: cgpo_v1
+corrupt_image_kwargs:
+  fill_type: local_mean
+corrupt_image_position: completion
+top_perception_quantile: 0.4
+perception_thr_granularity: completion
+kl_prcp_reference: old
+vppo_use_advantage_shaping: true
+vppo_advantage_scaling_min: 0.9
+
 # model args
-model: /c22073/codes/ms-swift/zsxm_checkpoint/nips/4_expe/qwen2-vl-7b-base_0625#grpo#Entropy_Verify_bs128#v4#RSN_LOC_0108#R128A256E2/v0-20260109-190652/checkpoint-500-merged
-output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#GRPO
+model: outputs/PathVerse/RSN_LOC_0108#R128A256E2
+output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#VPPO
 torch_dtype: bfloat16
 attn_impl: flash_attn
 freeze_vit: true
@@ -8,8 +19,8 @@ freeze_aligner: true
 
 # data args
 dataset: 
-  - 'projects/PathVerse/dataset/nips/3_rft/02_thumbnail_choice.json'
-  - 'projects/PathVerse/dataset/nips/3_rft/07_private_patch_choice.json'
+  - 'projects/PathVerse/dataset/nips/3_rft/02_thumbnail_choice_rsn_loc.json'
+  - 'projects/PathVerse/dataset/nips/3_rft/07_private_patch_choice_rsn_loc.json'
 split_dataset_ratio: 0.01
 dataset_num_proc: 16
 load_from_cache_file: true
@@ -24,7 +35,7 @@ save_total_limit: 2
 save_only_model: false
 report_to: swanlab
 swanlab_project: CGPO
-swanlab_exp_name: 01Baseline_GRPO_only-base-format_beta=0.001_entropy=0.06
+swanlab_exp_name: 03VPPO_cgpo_v1_local_mean_perc-token=0.4
 
 # train args
 train_type: full
@@ -53,13 +64,13 @@ reward_weights: ['0.2', '0.8'] # 注意这里必须是字符串形式，否则ya
 external_plugins: [projects/PathVerse/plugin/cgpo_orm.py]
 log_completions: true
 log_entropy: true
-entropy_loss_coef: 0.06
+entropy_loss_coef: 0.03
 entropy_loss_type: sampled
 
 # rollout args
 use_vllm: true
 vllm_mode: colocate
-vllm_gpu_memory_utilization: 0.4
+vllm_gpu_memory_utilization: 0.3
 vllm_max_model_len: 32768
 vllm_tensor_parallel_size: 2
 vllm_enforce_eager: false # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置。不用设置，改成配置compilation_config了

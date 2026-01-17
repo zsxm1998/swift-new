@@ -1,0 +1,89 @@
+# ToR args: 熵损失放在了下面的rlhf args且固定不动
+corrupt_image: cgpo_v1
+corrupt_image_kwargs:
+  fill_type: local_mean
+corrupt_image_position: completion
+tor_use_token_weighting: true
+tor_rsn_weight: 1.0
+top_entropy_quantile: 0.3
+entropy_thr_granularity: batch
+tor_prcp_weight: 0.5
+top_perception_quantile: 0.3
+perception_thr_granularity: batch
+kl_prcp_reference: old
+vppo_use_advantage_shaping: true
+vppo_advantage_scaling_min: 0.9
+
+# model args
+model: outputs/PathVerse/RSN_LOC_0108#R128A256E2
+output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#ToR+VPPO
+torch_dtype: bfloat16
+attn_impl: flash_attn
+freeze_vit: true
+freeze_aligner: true
+
+# data args
+dataset: 
+  - 'projects/PathVerse/dataset/nips/3_rft/02_thumbnail_choice_rsn_loc.json'
+  - 'projects/PathVerse/dataset/nips/3_rft/07_private_patch_choice_rsn_loc.json'
+split_dataset_ratio: 0.01
+dataset_num_proc: 16
+load_from_cache_file: true
+dataloader_num_workers: 4
+max_length: 8192 # 在GRPO时代表max_prompt_length
+
+# log, val and save args
+logging_steps: 1
+save_strategy: steps
+save_steps: 30
+save_total_limit: 2
+save_only_model: false
+report_to: swanlab
+swanlab_project: CGPO
+swanlab_exp_name: 05ToR+VPPO_cgpo_v1_local_mean_rsnw=1_rsnratio=0.3_prcpw=0.5_prcpratio=0.3_granularity=batch_tas-min=0.9
+
+# train args
+train_type: full
+deepspeed: zero3
+gradient_checkpointing: true
+learning_rate: 1e-6
+lr_scheduler_type: constant
+weight_decay: 0.01
+warmup_ratio: 0.0
+num_train_epochs: 2
+max_steps: 150
+per_device_train_batch_size: 4
+per_device_eval_batch_size: 8
+gradient_accumulation_steps: 32
+
+# rlhf args
+steps_per_generation: 96
+num_generations: 8
+rlhf_type: grpo
+loss_type: grpo
+beta: 0.001
+epsilon_high: 0.2
+num_iterations: 1
+reward_funcs: [cgpo_format, cgpo_accuracy]
+reward_weights: ['0.2', '0.8'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+external_plugins: [projects/PathVerse/plugin/cgpo_orm.py]
+log_completions: true
+log_entropy: true
+entropy_loss_coef: 0.03
+entropy_loss_type: sampled
+
+# rollout args
+use_vllm: true
+vllm_mode: colocate
+vllm_gpu_memory_utilization: 0.3
+vllm_max_model_len: 32768
+vllm_tensor_parallel_size: 2
+vllm_enforce_eager: false # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置。不用设置，改成配置compilation_config了
+vllm_engine_kwargs:
+  max_num_batched_tokens: 4096
+  compilation_config:
+    mode: "none"
+sleep_level: 1
+max_completion_length: 4096
+temperature: 1.0
+top_p: 0.99

@@ -1,3 +1,6 @@
+import base64
+import imghdr
+import mimetypes
 import os
 from copy import deepcopy
 from typing import List, Optional
@@ -31,9 +34,13 @@ class OpenAIEngine:
     ):
         resp_contents = []
         for infer_request in infer_requests:
+            messages = infer_request['messages']
+            images = infer_request.get('images') or []
+            if images:
+                messages = self._build_multimodal_messages(messages, images)
             completion = self.client.chat.completions.create(
                 model=self.model,
-                messages=infer_request['messages'],
+                messages=messages,
                 temperature=request_config.temperature,
                 top_p=request_config.top_p,
                 max_tokens=request_config.max_tokens,
@@ -66,6 +73,44 @@ class OpenAIEngine:
             resp_contents.append(resp_content)
 
         return resp_contents
+
+    def _build_multimodal_messages(self, messages, images):
+        image_iter = iter(images)
+        new_messages = []
+        for message in messages:
+            content = message.get('content')
+            if not isinstance(content, str) or '<image>' not in content:
+                new_messages.append(message)
+                continue
+            parts = content.split('<image>')
+            mm_content = []
+            for i, part in enumerate(parts):
+                if part:
+                    mm_content.append({'type': 'text', 'text': part.strip()})
+                if i < len(parts) - 1:
+                    image_path = next(image_iter, None)
+                    if not image_path:
+                        continue
+                    mm_content.append({
+                        'type': 'image_url',
+                        'image_url': {
+                            'url': self._image_path_to_data_url(image_path),
+                        },
+                    })
+            new_message = dict(message)
+            new_message['content'] = mm_content
+            new_messages.append(new_message)
+        return new_messages
+
+    def _image_path_to_data_url(self, image_path: str) -> str:
+        with open(image_path, 'rb') as f:
+            img_bytes = f.read()
+        mime = mimetypes.guess_type(image_path)[0]
+        if not mime:
+            kind = imghdr.what(None, h=img_bytes)
+            mime = f'image/{kind}' if kind else 'image/png'
+        b64 = base64.b64encode(img_bytes).decode('ascii')
+        return f'data:{mime};base64,{b64}'
 
 
 @RayHelper.worker(group=['sampler', 'prm', 'orm'])

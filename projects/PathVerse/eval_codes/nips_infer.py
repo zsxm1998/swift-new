@@ -82,6 +82,8 @@ def preprocess_data(args):
                 system_str = system_str + '\n\n' + args.think_system if system_str else args.think_system
             if args.func:
                 system_str = system_str + '\n\n' + args.func_system if system_str else args.func_system
+            if args.loc:
+                system_str = system_str + '\n\n' + args.loc_system if system_str else args.loc_system
             if system_str:
                 if data['messages'][0]['role'] not in ['system', 'system_prompt']:
                     data['messages'].insert(0, {'role': 'system', 'content': system_str})
@@ -294,6 +296,8 @@ if __name__ == "__main__":
     parser.add_argument("--think-system", type=str, default="在给出回答之前，你**必须**先在心里进行思考。将思考内容放在<think>和</think>之间，在</think>之后进行正式回答。对于有确定性答案的问题，如选择题和填空题等，在回答的最后，将选项或答案放在<answer>和</answer>之间。例如：<think>思考内容</think>正式回答内容和分析<answer>选项或回答短语</answer>", help="思考模式下的额外系统提示词，传入则设置为该值")
     parser.add_argument("--func", action='store_true', help="是否使用函数调用模式，传入则设置为True")
     parser.add_argument("--func-system", type=str, default="下面是你可以调用的工具函数列表：\n```\n[{\n    \"name\": \"get_highres_by_point\",\n    \"description\": \"基于WSI缩略图中的选定坐标获取以该点为中心的固定大小高倍率图像，以完成缩略图无法完成的任务。\",\n    \"parameters\": {\n        \"wsi_index\": {\n            \"type\": \"integer\",\n            \"description\": \"用户提供的WSI缩略图索引，从0开始。\",\n            \"required\": true\n        },\n        \"point_list\": {\n            \"type\": \"array\",\n            \"description\": \"需要放大的点列表。每个点表示为[x, y]，其中x和y为归一化坐标，所有坐标均为0-1000之间的整数。\",\n            \"items\": {\n                \"type\": \"array\",\n                \"description\": \"一个放大点，格式为[x, y]，所有值均为0-1000之间的整数。\",\n                \"minItems\": 2,\n                \"maxItems\": 2,\n                \"items\": {\n                    \"type\": \"integer\",\n                    \"minimum\": 0,\n                    \"maximum\": 1000,\n                    \"examples\": [600, 700]\n                }\n            },\n            \"required\": true\n        }\n    },\n    \"returns\": {\n        \"type\": \"images\",\n        \"description\": \"返回对应坐标点中心的固定大小高倍率图像列表。\"\n    }\n}]\n```\n\n说明：\n- 调用上述工具函数来应对需要进一步处理或包含额外信息检索的用户请求。\n- 如果选择调用函数，仅能按照以下格式回复：\n```\n<function name=\"{function_name}\">{parameters}</function>\n```\n其中：parameters => 一个JSON字典，键为函数参数名，值为相应的参数值。\n\n以下是调用示例：\n```\n<function name=\"example_function_name\">{\"argument_name\": argument_value}</function>\n```\n\n提醒：\n- 函数调用必须遵循指定格式。\n- 必须提供所有必需参数。\n- 每次只能调用一个函数。\n- 整个函数调用必须放在一行内。\n- 函数调用必须放在回复的最后，后面不能有任何其他内容，即整条回复以`</function>`结尾。\n- 如果使用搜索结果回答用户请求，必须添加来源信息。", help="函数调用模式下的额外系统提示词，传入则设置为该值")
+    parser.add_argument("--loc", action='store_true', help="是否使用推理时定位模式，传入则设置为True")
+    parser.add_argument("--loc-system", type=str, default="你具备视觉定位（Visual Grounding）能力。在分析过程中，当你在图像中找到关键实体证据（如细胞、组织结构、区域）时，请遵守以下 XML 格式规范给出实体定位，并用 XML 标签直接替代原本的名词文本：\n\n1. 首次提及可见实体，需要同时给出该实体的一个或多个检测框：\n   使用 <entity name=\"实体名\" id=\"唯一整数ID\"><bbox_list><box>x1, y1, x2, y2</box></bbox_list></entity>\n\n2. 后续再次提及已定义的实体，需要准确引用之前提过的实体id，并保证name相同：\n   使用自闭合标签 <ref name=\"实体名\" id=\"对应ID\"/>\n\n注意：每个回答内实体 id 必须唯一，且为从1递增的整数。不要在标签前重复实体名称。例如，应给出“发现<entity name='细胞核' id='1'>...</entity>”，禁止给出“发现细胞核<entity name='细胞核' id='1'>...</entity>”。")
 
     args = parser.parse_args()
     main(args)

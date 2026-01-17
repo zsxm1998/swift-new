@@ -1,4 +1,6 @@
 # Copyright (c) Alibaba, Inc. and its affiliates.
+import hashlib
+import imghdr
 import os
 from copy import deepcopy
 
@@ -71,9 +73,27 @@ class VanillaSampler(Sampler):
         rows = []
         key = list(data.keys())[0]
         data_len = len(data[key])
+        images_root = ''
         for idx in range(data_len):
             row = {key: data[key][idx] for key in data}
-            if row.get('images') and 'bytes' in row['images'][0]:
+            if row.get('images') and ('bytes' in row['images'][0]):
+                for img in row['images']:
+                    img_bytes = img.get('bytes')
+                    if img_bytes is None:
+                        continue
+                    assert os.path.exists(images_root), f'你需要指定一个存在的存储图片的目录：{images_root}'
+                    if isinstance(img_bytes, (bytearray, memoryview)):
+                        img_bytes = bytes(img_bytes)
+                    elif isinstance(img_bytes, list):
+                        img_bytes = bytes(img_bytes)
+                    digest = hashlib.blake2b(img_bytes, digest_size=20).hexdigest()
+                    ext = imghdr.what(None, h=img_bytes) or 'jpg'
+                    filename = f'{digest}.{ext}'
+                    img_path = os.path.join(images_root, filename)
+                    if not os.path.exists(img_path):
+                        with open(img_path, 'wb') as f:
+                            f.write(img_bytes)
+                    img['path'] = img_path
                 row['images'] = [img['path'] for img in row['images']]
             rows.append(row)
         VanillaSampler.check_row_valid(rows)

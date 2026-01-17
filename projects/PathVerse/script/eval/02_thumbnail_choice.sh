@@ -2,7 +2,7 @@
 
 # Check if the correct number of arguments is provided
 if [ "$#" -lt 1 ]; then
-  echo "Usage: $0 <CKPT_DIR> [-ng] [--think] [--func] [-tp <int>] [--batch-size <int>]"
+  echo "Usage: $0 <CKPT_DIR> [-ng] [--think] [--func] [--loc] [-tp <int>] [--batch-size <int>]"
   exit 1
 fi
 
@@ -50,6 +50,10 @@ while [[ $# -gt 0 ]]; do
       FUNC_FLAG=true
       shift
       ;;
+    --loc)
+      LOC_FLAG=true
+      shift
+      ;;
     -tp)
       TP_VALUE="$2"
       shift 2
@@ -71,6 +75,9 @@ fi
 if [ -n "$FUNC_FLAG" ]; then
   ANSWER_FILE="${ANSWER_FILE%.jsonl}_func.jsonl"
 fi
+if [ -n "$LOC_FLAG" ]; then
+  ANSWER_FILE="${ANSWER_FILE%.jsonl}_loc.jsonl"
+fi
 
 # Build Python arguments
 PYTHON_ARGS=(
@@ -87,6 +94,10 @@ fi
 if [ -n "$FUNC_FLAG" ]; then
   PYTHON_ARGS+=(--func)
   RES_FILE="${RES_FILE%.log}_func.log"
+fi
+if [ -n "$LOC_FLAG" ]; then
+  PYTHON_ARGS+=(--loc)
+  RES_FILE="${RES_FILE%.log}_loc.log"
 fi
 if [ -n "$TP_VALUE" ]; then
   PYTHON_ARGS+=(-tp "$TP_VALUE")

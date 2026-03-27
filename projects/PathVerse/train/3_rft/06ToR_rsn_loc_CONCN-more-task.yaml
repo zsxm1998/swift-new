@@ -1,6 +1,20 @@
+# ToR args: 熵损失放在了下面的rlhf args且固定不动
+corrupt_image: cgpo_v1
+corrupt_image_kwargs:
+  fill_type: local_mean
+corrupt_image_position: completion
+tor_use_token_weighting: true
+tor_rsn_weight: 1.0
+top_entropy_quantile: 0.3
+entropy_thr_granularity: batch
+tor_prcp_weight: 0.5
+top_perception_quantile: 0.3
+perception_thr_granularity: batch
+kl_prcp_reference: old
+
 # model args
-model: outputs/PathVerse/RSN_LOC_0108#R128A256E2
-output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#01GRPO
+model: outputs/PathVerse/1_sft/qwen2-vl-7b-base_0625+rsn-0108+RD_full_VAL_2/v1-20260118-163824
+output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#06ToR+CONCH/v0-20260121-023258
 torch_dtype: bfloat16
 attn_impl: flash_attn
 freeze_vit: true
@@ -8,8 +22,9 @@ freeze_aligner: true
 
 # data args
 dataset: 
-  - 'projects/PathVerse/dataset/nips/3_rft/02_thumbnail_choice.json'
-  - 'projects/PathVerse/dataset/nips/3_rft/07_private_patch_choice.json'
+  - 'projects/PathVerse/dataset/nips/3_rft/02_thumbnail_choice_rsn_loc.json'
+  - 'projects/PathVerse/dataset/nips/3_rft/07_private_patch_choice_rsn_loc.json'
+  - 'datasets_public/RefPath/refpath_train_convs_RL-half.json#5000'
 split_dataset_ratio: 0.01
 dataset_num_proc: 16
 load_from_cache_file: true
@@ -24,7 +39,7 @@ save_total_limit: 2
 save_only_model: false
 report_to: swanlab
 swanlab_project: CGPO
-swanlab_exp_name: 01Baseline_GRPO_only-base-format_beta=0.001_entropy=0.03
+swanlab_exp_name: 06ToR+SS_cgpo_v1_local_mean_rsnw=1_rsnratio=0.3_prcpw=0.5_prcpratio=0.3_granularity=batch_sync_ref_model_CONCH
 
 # train args
 train_type: full
@@ -34,8 +49,7 @@ learning_rate: 1e-6
 lr_scheduler_type: constant
 weight_decay: 0.01
 warmup_ratio: 0.0
-num_train_epochs: 2
-max_steps: 150
+num_train_epochs: 1
 per_device_train_batch_size: 4
 per_device_eval_batch_size: 8
 gradient_accumulation_steps: 32
@@ -45,21 +59,23 @@ steps_per_generation: 96
 num_generations: 8
 rlhf_type: grpo
 loss_type: grpo
-beta: 0.001
+beta: 0.04
 epsilon_high: 0.2
 num_iterations: 1
-reward_funcs: [cgpo_format, cgpo_accuracy]
-reward_weights: ['0.2', '0.8'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
+reward_funcs: [cgpo_format, cgpo_accuracy, cgpo_entity_det_conch]
+reward_weights: ['0.2', '0.8', '1.0'] # 注意这里必须是字符串形式，否则yaml会读成浮点数，导致报错
 external_plugins: [projects/PathVerse/plugin/cgpo_orm.py]
 log_completions: true
 log_entropy: true
-entropy_loss_coef: 0.03
-entropy_loss_type: sampled
+# entropy_loss_coef: 0.005
+# entropy_loss_type: full
+sync_ref_model: true
+ref_model_sync_steps: 50
 
 # rollout args
 use_vllm: true
 vllm_mode: colocate
-vllm_gpu_memory_utilization: 0.4
+vllm_gpu_memory_utilization: 0.3
 vllm_max_model_len: 32768
 vllm_tensor_parallel_size: 2
 vllm_enforce_eager: false # vllm和zero3冲突，这项必须设为true否则vllm报错，zero2不用设置。不用设置，改成配置compilation_config了

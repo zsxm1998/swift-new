@@ -211,7 +211,7 @@ def compute_iou(boxA, boxB):
     return interArea / unionArea
 
 
-def compute_detection_reward(gt_boxes, pred_boxes):
+def compute_detection_reward_old(gt_boxes, pred_boxes):
     """计算基于F1 × avg_IoU 的 reward 值"""
     if not gt_boxes and not pred_boxes:
         return 1.0  # 两者都为空时，reward设为1
@@ -248,6 +248,115 @@ def compute_detection_reward(gt_boxes, pred_boxes):
 
     avg_iou = sum(match_scores) / TP
     reward = f1 * avg_iou
+    return reward
+
+
+def compute_ciou(box_a, box_b, eps=1e-7):
+    """
+    计算两个边界框的 CIoU（Complete IoU），返回值理论范围约为 [-1, 1]
+    box 格式: [x1, y1, x2, y2]，要求 x1 < x2, y1 < y2
+    """
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+
+    # 交集框
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    inter_w = max(0.0, inter_x2 - inter_x1)
+    inter_h = max(0.0, inter_y2 - inter_y1)
+    inter_area = inter_w * inter_h
+
+    # 并集面积
+    a_w = max(eps, ax2 - ax1)
+    a_h = max(eps, ay2 - ay1)
+    b_w = max(eps, bx2 - bx1)
+    b_h = max(eps, by2 - by1)
+
+    area_a = a_w * a_h
+    area_b = b_w * b_h
+    union_area = area_a + area_b - inter_area
+    iou = inter_area / max(union_area, eps)
+
+    # 中心点距离项 rho^2
+    acx = (ax1 + ax2) * 0.5
+    acy = (ay1 + ay2) * 0.5
+    bcx = (bx1 + bx2) * 0.5
+    bcy = (by1 + by2) * 0.5
+    rho2 = (acx - bcx) ** 2 + (acy - bcy) ** 2
+
+    # 最小外接框对角线长度平方 c^2
+    enclose_x1 = min(ax1, bx1)
+    enclose_y1 = min(ay1, by1)
+    enclose_x2 = max(ax2, bx2)
+    enclose_y2 = max(ay2, by2)
+    c_w = max(eps, enclose_x2 - enclose_x1)
+    c_h = max(eps, enclose_y2 - enclose_y1)
+    c2 = c_w ** 2 + c_h ** 2
+
+    # 长宽比一致性项 v 与权重 alpha
+    # v = 4/pi^2 * (arctan(w_gt/h_gt) - arctan(w_pred/h_pred))^2
+    atan_a = math.atan(a_w / a_h)
+    atan_b = math.atan(b_w / b_h)
+    v = (4.0 / (math.pi ** 2)) * (atan_a - atan_b) ** 2
+
+    # alpha = v / (1 - iou + v)
+    alpha = v / max((1.0 - iou + v), eps)
+
+    # CIoU = IoU - (rho^2 / c^2 + alpha * v)
+    ciou = iou - (rho2 / max(c2, eps) + alpha * v)
+    return ciou
+
+
+def compute_detection_reward(gt_boxes, pred_boxes):
+    """计算基于 F1 × avg_CIoU 的 reward 值（返回范围裁剪到 [0, 1]）"""
+    # 无框处理逻辑保持不变
+    if not gt_boxes and not pred_boxes:
+        return 1.0  # 两者都为空时，reward设为1
+
+    matched_gt = set()
+    matched_pred = set()
+    match_scores = []
+
+    # 计算所有 CIoU 分数（不设 IoU/CIoU 阈值），并按分数降序排列做一对一匹配
+    # 注意：CIoU 理论范围约为 [-1, 1]，这里映射到 [0, 1] 作为匹配分数与最终 avg_score
+    score_pairs = []
+    for i, gt in enumerate(gt_boxes):
+        for j, pred in enumerate(pred_boxes):
+            ciou = compute_ciou(gt, pred)
+            score = (ciou + 1.0) * 0.5  # 映射到 [0, 1] 附近
+            # 为了稳定起见进行裁剪，避免数值误差导致超界
+            score = max(0.0, min(1.0, score))
+            score_pairs.append((score, i, j))
+
+    score_pairs.sort(reverse=True, key=lambda x: x[0])
+
+    # 贪心一对一匹配（等价于“按最高匹配分优先”）
+    for score, i, j in score_pairs:
+        if i not in matched_gt and j not in matched_pred:
+            matched_gt.add(i)
+            matched_pred.add(j)
+            match_scores.append(score)
+
+    TP = len(match_scores)
+    FP = len(pred_boxes) - TP
+    FN = len(gt_boxes) - TP
+
+    # 没有任何匹配对（通常发生在 gt_boxes 或 pred_boxes 为空）
+    if TP == 0:
+        return 0.0
+
+    precision = TP / (TP + FP) if (TP + FP) > 0 else 0.0
+    recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0
+    f1 = (2.0 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+
+    avg_score = sum(match_scores) / TP  # avg_CIoU（已映射到 [0,1]）
+    reward = f1 * avg_score
+
+    # 最终裁剪到 [0, 1]，保证返回值域不变
+    reward = max(0.0, min(1.0, reward))
     return reward
 
 

@@ -343,6 +343,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             trajectory_inputs = self._get_trajectory_inputs(inputs)
             reward_kwargs.update({'trajectory_inputs': trajectory_inputs})
         reward_kwargs.update(RowPreprocessor.rows_to_batched(reward_inputs))
+        if hasattr(self, '_fast_infer'):
+            reward_kwargs['rollout_infer'] = self._fast_infer
+        reward_kwargs['output_dir'] = self.args.output_dir
 
         # Use pre-computed indices for async reward functions
         async_indices_set = set(self._async_reward_func_indices)

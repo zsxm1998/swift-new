@@ -654,6 +654,10 @@ class MegatronGRPOTrainer(MegatronRolloutMixin, MegatronRLHFTrainer):
         # Common reward kwargs
         reward_kwargs = {'trainer_state': self.get_trainer_state()}
         reward_kwargs.update(RowPreprocessor.rows_to_batched(batch))
+        if hasattr(self, '_fast_infer'):
+            reward_kwargs['rollout_infer'] = self._fast_infer
+        output_dir = getattr(self.args, 'output_dir', None) or getattr(self.args, 'save', None)
+        reward_kwargs['output_dir'] = output_dir
 
         # Use pre-computed indices for async reward functions
         async_indices_set = set(self._async_reward_func_indices)

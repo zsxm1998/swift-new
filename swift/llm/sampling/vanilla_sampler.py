@@ -73,7 +73,7 @@ class VanillaSampler(Sampler):
         rows = []
         key = list(data.keys())[0]
         data_len = len(data[key])
-        images_root = ''
+        images_root = '' #'/shared_storage/xzsxm/data/ViRL39K/images'
         for idx in range(data_len):
             row = {key: data[key][idx] for key in data}
             if row.get('images') and ('bytes' in row['images'][0]):

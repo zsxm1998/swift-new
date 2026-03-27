@@ -1,5 +1,5 @@
 OPENAI_API_KEY="sk-0057d2b0958d41588d9f61d4ae6c15a7" \
-python projects/CGPO/repeat_sample.py \
+python projects/CGPO/sample_data/repeat_sample.py \
     --stream true \
     --sampler_type distill \
     --sampler_engine client \
@@ -15,4 +15,5 @@ python projects/CGPO/repeat_sample.py \
     --temperature 0.9 \
     --top_p 0.8 \
     --output_dir outputs/CGPO/sample/ViRL39K \
-    --output_file right.json
+    --output_file right.json \
+    --resume true

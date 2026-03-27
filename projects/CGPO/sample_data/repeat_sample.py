@@ -10,6 +10,7 @@ from typing import List, Optional, Union
 
 import numpy as np
 
+from openai import APIError
 from swift.llm import SamplingArguments
 from swift.llm.sampling.sampling import SwiftSampling
 from swift.llm.sampling.utils import get_messages_md5
@@ -54,6 +55,11 @@ class SwiftRepeatSampling(SwiftSampling):
         best_idx = max(valid_indices, key=lambda i: orm_score[i])
         return best_idx, orm_score, orm_mask
 
+    def _normalize_row(self, row):
+        data = {k: [v] for k, v in row.items()}
+        rows = self.sampler.convert_data_to_rows(data)
+        return rows[0] if rows else row
+
     def run(self):
         os.makedirs(self.args.output_dir, exist_ok=True)
         iter_file = os.path.join(self.args.output_dir, self.args.output_file)
@@ -87,12 +93,26 @@ class SwiftRepeatSampling(SwiftSampling):
                 if idx <= index_resume:
                     continue
                 logger.info(f'Sampling index: {idx}')
+                row = dataset[idx]
                 slices = dataset[idx:idx + 1]
                 slices = self.sampler.truncate_input(slices)
                 tries = 0
                 while True:
                     tries += 1
-                    resp_all = self.sampler.generate(slices)
+                    try:
+                        resp_all = self.sampler.generate(slices)
+                    except APIError as exc:
+                        msg = str(exc)
+                        if 'inappropriate content' in msg:
+                            failed_row = deepcopy(self._normalize_row(row))
+                            failed_row['error'] = msg
+                            with open(failed_file, 'a') as failed_f:
+                                failed_f.write(json.dumps(failed_row, ensure_ascii=False) + '\n')
+                            logger.warning('Inappropriate content, saved sample to failed.jsonl.')
+                            with open(ckpt_state_file, 'w') as ckpt_state:
+                                json.dump({'index': idx}, ckpt_state)
+                            break
+                        raise
                     if not resp_all:
                         logger.warning('Empty responses returned, retrying.')
                         continue

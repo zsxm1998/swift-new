@@ -155,7 +155,7 @@ megatron_output/
 ast_index_file.py
 
 # ZSXM
-/datasets
+/datasets*
 projects/PathVerse/dataset
 projects/CGPO/dataset
 verl

@@ -103,9 +103,16 @@ def main(args):
             } # for error torch._dynamo.exc.Unsupported: non-function or method super: <built-in function _disabled_torch_function_impl>
             if args.seed is not None:
                 engine_kwargs['seed'] = args.seed
+            model_type = None
+            if 'QoQ-Med-VL' in args.model_path:
+                model_type = 'qwen2_5_vl'
+            if 'Lingshu' in args.model_path:
+                model_type = 'qwen2_5_vl'
             engine = VllmEngine(
                 model_id_or_path=args.model_path,
-                gpu_memory_utilization=0.8,
+                model_type=model_type,
+                gpu_memory_utilization=0.9,
+                max_model_len=32768,
                 tensor_parallel_size=args.tensor_parallel_size,
                 enable_lora=args.lora_path is not None,
                 max_lora_rank=16,
@@ -120,6 +127,7 @@ def main(args):
             args.batch_size = 2 if get_model_info_meta(args.model_path)[1].model_type in ['pathverse', 'omnipt_qwen2_vl'] or args.func else args.batch_size // 2
             engine = PtEngine(
                 model_id_or_path=args.model_path,
+                model_type=model_type,
                 max_batch_size=args.batch_size,
                 attn_impl='flash_attn',
                 use_hf=True,

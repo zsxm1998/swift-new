@@ -108,6 +108,15 @@ def _normalize_plain_text(text: str) -> str:
     return re.sub(r'\s+', ' ', lowered).strip()
 
 
+def _normalize_alnum_text(text: str) -> str:
+    lowered = text.lower()
+    lowered = re.sub(r'\\(text|mathrm|mathbf|mathit|mathtt)\{([^}]*)\}', r'\2', lowered)
+    lowered = re.sub(r'\\\s+', ' ', lowered)
+    lowered = re.sub(r'[{}$]', '', lowered)
+    lowered = re.sub(r'[^a-z0-9]+', ' ', lowered)
+    return re.sub(r'\s+', ' ', lowered).strip()
+
+
 def extract_boxed_plain_text(text: Optional[str]) -> Optional[str]:
     if not text:
         return None
@@ -115,6 +124,18 @@ def extract_boxed_plain_text(text: Optional[str]) -> Optional[str]:
     if not boxed or boxed == 'None':
         return None
     normalized = _normalize_plain_text(boxed)
+    if not normalized:
+        return None
+    return normalized
+
+
+def extract_boxed_alnum_text(text: Optional[str]) -> Optional[str]:
+    if not text:
+        return None
+    boxed = extract_boxed_content(text)
+    if not boxed or boxed == 'None':
+        return None
+    normalized = _normalize_alnum_text(boxed)
     if not normalized:
         return None
     return normalized
@@ -135,6 +156,28 @@ def is_simple_text_correct(prediction: str, ground_truth: str) -> Optional[bool]
     if len(gt_norm.split()) > 6:
         return None
     pred_norm = extract_boxed_plain_text(prediction)
+    if not pred_norm:
+        return None
+    return pred_norm == gt_norm
+
+
+def is_simple_alnum_text_correct(prediction: str, ground_truth: str) -> Optional[bool]:
+    if not ground_truth:
+        return None
+    if re.search(r'\\', ground_truth):
+        return None
+    if not re.search(r'[A-Za-z0-9]', ground_truth):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9\s\.\,\;\!\?\'\"\-]+", ground_truth):
+        return None
+    if re.search(r'[:/=+\-*^]', ground_truth):
+        return None
+    gt_norm = _normalize_alnum_text(ground_truth)
+    if not gt_norm:
+        return None
+    if len(gt_norm.split()) > 6:
+        return None
+    pred_norm = extract_boxed_alnum_text(prediction)
     if not pred_norm:
         return None
     return pred_norm == gt_norm
@@ -451,6 +494,10 @@ class MathORM(ORM):
             if simple_match is not None:
                 rewards.append(float(simple_match))
                 continue
+            simple_alnum_match = is_simple_alnum_text_correct(prediction, ground_truth)
+            if simple_alnum_match is not None:
+                rewards.append(float(simple_alnum_match))
+                continue
             prediction = MathORM.extract_boxed_result(prediction)
             ground_truth = MathORM.extract_boxed_result(ground_truth)
             if self.use_opencompass:
@@ -489,6 +536,10 @@ class MathAccuracy(ORM):
             simple_match = is_simple_text_correct(content, sol)
             if simple_match is not None:
                 rewards.append(float(simple_match))
+                continue
+            simple_alnum_match = is_simple_alnum_text_correct(content, sol)
+            if simple_alnum_match is not None:
+                rewards.append(float(simple_alnum_match))
                 continue
             content_match = re.search(r'<answer>(.*?)</answer>', content, re.DOTALL)
             content_to_parse = content_match.group(1).strip() if content_match else content

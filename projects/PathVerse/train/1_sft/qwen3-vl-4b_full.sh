@@ -2,8 +2,8 @@
 CUDA_VISIBLE_DEVICES="0,1,2,3,4,5,6,7" \
 NPROC_PER_NODE=8 \
 swift sft \
-    --output_dir ./outputs/PathVerse/1_sft/qwen2-vl-7b-base_0625+rsn-0108+RD_full_VAL_2 \
-    --model Qwen/Qwen2-VL-7B \
+    --output_dir ./outputs/PathVerse/1_sft/qwen3-vl-7b_0625+rsn-0108+RD_full_VAL_2 \
+    --model Qwen/Qwen3-VL-4B-Instruct \
     --deepspeed zero3 \
     --torch_dtype bfloat16 \
     --train_type full \

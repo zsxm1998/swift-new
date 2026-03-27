@@ -8,7 +8,7 @@ swift sft \
     --model Qwen/Qwen3-VL-4B-Instruct \
     --deepspeed zero2 \
     --torch_dtype bfloat16 \
-    --train_type full \
+    --train_type lora \
     --gradient_checkpointing true \
     --attn_impl flash_attn \
     --freeze_vit false \
@@ -21,7 +21,7 @@ swift sft \
     --num_train_epochs 2 \
     --per_device_train_batch_size 4 \
     --gradient_accumulation_steps 4 \
-    --learning_rate 2e-5 \
+    --learning_rate 1e-4 \
     --warmup_ratio 0.05 \
     --eval_strategy no \
     --save_strategy steps \

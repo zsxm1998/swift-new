@@ -14,7 +14,7 @@ kl_prcp_reference: old
 
 # model args
 model: outputs/PathVerse/RSN_LOC_0108#R128A256E2
-output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#ToR
+output_dir: outputs/PathVerse/3_rft/qwen2-vl-7b-base#RSN_LOC_0108#R128A256E2#04ToR
 torch_dtype: bfloat16
 attn_impl: flash_attn
 freeze_vit: true
